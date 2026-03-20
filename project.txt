@@ -1,0 +1,498 @@
+﻿TAMIL NADU FLOOR PLAN PROJECT
+Project root: D:\layout_project
+Updated: 2026-03-20
+
+============================================================
+1. PROJECT OVERVIEW
+============================================================
+This project generates Tamil Nadu style residential floor plans from
+structured rules, synthetic training data, and trained ML models.
+
+The architecture is hybrid:
+- Rule-driven where geometry, circulation, doors, windows, setbacks,
+  materials, and code checks must be deterministic and explainable.
+- Model-driven where room sizing and plan validity scoring benefit from
+  learned patterns from the synthetic dataset.
+
+The target pipeline is:
+CSV seed rules -> SQLite knowledge DB -> synthetic parquet dataset ->
+trained models -> engine -> renderer -> Streamlit app
+
+
+============================================================
+2. PHASE STATUS
+============================================================
+Phase 0 - Seed Data
+Status: Complete
+- 11 CSV files created and inspected in [seeds](D:/layout_project/seeds)
+- These files encode planning rules, climate data, code constraints,
+  movement logic, materials, plot configurations, and setbacks.
+
+Phase 1 - SQLite Database
+Status: Complete
+- Database built at [floorplan.db](D:/layout_project/db/floorplan.db)
+- 11 tables loaded
+- 1,634 total rows
+- Indexes created for major lookup columns
+- Validation scripts completed successfully
+
+Phase 2 - Synthetic Training Data
+Status: Complete
+- Parquet dataset built at [floor_plan_samples.parquet](D:/layout_project/training_data/floor_plan_samples.parquet)
+- 50,000 samples
+- 91 columns
+- Valid plans: about 10.6%
+- Invalid plans: about 89.4%
+- Includes geometry features, violation flags, and score labels
+
+Phase 3 - Model Training
+Status: Complete
+- Constraint scorer:
+  [constraint_scorer.pkl](D:/layout_project/models/constraint_scorer.pkl)
+  XGBClassifier, 74 features
+- Room dimension predictor:
+  [room_dimensions.h5](D:/layout_project/models/room_dimensions.h5)
+  Keras model, 9 inputs -> 39 outputs
+- SHAP explainer:
+  [shap_explainer.pkl](D:/layout_project/models/shap_explainer.pkl)
+
+Phase 4 - Engine
+Status: Complete (functional), ML alignment pending
+- [engine.py](D:/layout_project/engine/engine.py) exists
+- Model loading, DB helpers, band-based room placement, wall network,
+  door placement, window placement, feature vector building, and scoring
+  are implemented
+- Current blocker (root cause):
+  the XGBoost constraint scorer was trained with valid 2BHK examples only
+  at larger plot sizes (plot_area 360/432/600 sqm). There are 0 valid
+  2BHK samples around a 12x15m plot (plot_area 180 sqm), so engine
+  outputs for 12x15m are out-of-distribution and score_valid remains
+  near 0 even when the deterministic scores are high.
+
+Phase 5 - Renderer
+Status: Complete
+- Renderer implemented at [renderer.py](D:/layout_project/renderer/renderer.py)
+- Self-test outputs generated in [outputs](D:/layout_project/outputs)
+  - plan_Coimbatore_2BHK_N.png
+  - plan_Chennai_3BHK_N.png
+  - plan_Madurai_4BHK_N.png
+
+Phase 6 - Streamlit App
+Status: Next
+- Will provide user inputs, generation controls, preview, and export
+- Will call engine first, then renderer
+- Final output should support practical architectural review
+
+
+============================================================
+3. WHAT WE HAVE DONE SO FAR
+============================================================
+Completed:
+- Inspected all 11 seed CSV files
+- Built SQLite DB and schema export
+- Validated table presence, row counts, and critical columns
+- Generated 50k synthetic plans with room features + violations + scores
+- Trained 3 models in Colab
+- Verified model artifacts exist locally
+- Created Colab notebook for retraining and download flow
+- Implemented renderer and produced PNG outputs in outputs\
+- Built first engine implementation with:
+  - DB-backed setbacks
+  - DB-backed climate lookup
+  - DB-backed door widths from passage_dimensions
+  - DB-backed materials and Baker principles
+  - model-driven room dimension prediction
+  - wall extraction from room geometry
+  - door and window placement
+  - SHAP-enabled scoring path
+
+Current engineering findings:
+- The scorer feature order issue was identified and corrected
+- The current remaining issue is not schema mismatch
+- The remaining issue is distribution mismatch:
+  the generated engine layout is still geometrically different from the
+  layouts the scorer learned to treat as valid
+
+
+============================================================
+4. CORE RULE MAPPING
+============================================================
+The project intentionally splits responsibilities between DB rules,
+Python geometry, and ML models.
+
+4.1 Rules that come from the database
+
+tn_setbacks
+- Used for front, rear, and side setbacks
+- Drives net buildable width and depth
+- Used in Phase 4 engine geometry
+
+climate_data
+- Used for district -> climate_zone
+- Used for window orientation preference:
+  window_north_score, window_south_score, window_east_score,
+  window_west_score
+- Used in engine window placement
+
+movement_paths
+- Encodes critical circulation logic
+- Informs required room-to-room access expectations
+- Used to derive door connectivity priorities
+
+passage_dimensions
+- Supplies door widths and passage clear widths
+- Engine explicitly reads min_clear_width_m from DB
+- This is the authoritative source for door widths
+
+adjacency_rules
+- Encodes MUST_SHARE_WALL and forbidden adjacency semantics
+- Used to reason about kitchen-bedroom, toilet-kitchen,
+  master_bedroom-toilet_attached relationships
+- Also informs layout debugging and scoring logic
+
+nbc_codes
+- Encodes mandatory room minimums and code constraints
+- In practice used as the source-of-truth category for minimum areas,
+  widths, and compliance concepts
+
+materials_db
+- Provides district-aware, climate-aware material recommendations
+- Used by engine to attach render-ready material metadata
+
+baker_principles
+- Provides climate and plot-area filtered cost-saving / sustainability
+  guidance
+- Used by engine as design recommendation context
+
+plot_configurations
+- Used earlier during synthetic data generation to derive room target
+  dimensions and realistic plot-to-BHK sizing patterns
+
+circulation_zones
+- Seeded for future zoning logic and layout orchestration
+- Likely more useful in engine refinement and app-level explanation
+
+entry_sequence_rules
+- Seeded for future entrance composition and entry progression
+- Can later inform renderer annotations and front-entry design logic
+
+4.2 Rules that stay in Python code
+
+Wall geometry
+- Exterior wall thickness: 230 mm
+- Interior wall thickness: 115 mm
+- These are deterministic geometry rules, not learned behavior
+
+Wall network extraction
+- Derived from room adjacency and room edges
+- Needed so renderer draws walls as built elements
+
+Door placement geometry
+- Doors are placed on shared walls
+- Wall midpoint, swing side, and opening placement are code-driven
+
+Window placement geometry
+- Exterior wall eligibility is computed in code
+- Climate orientation preference is read from DB
+
+Rotation / facing transforms
+- North, South, East, West plot orientation transforms are handled in code
+
+4.3 What the models do
+
+room_dimensions.h5
+- Predicts room widths and depths from:
+  plot_w, plot_d, plot_area, net_w, net_d, net_area,
+  bhk, facing_code, climate_code
+
+constraint_scorer.pkl
+- Scores whether a proposed arrangement resembles a valid plan from the
+  synthetic dataset
+- Consumes 74 numerical features from build_feature_vector()
+
+shap_explainer.pkl
+- Explains which input features most influenced the scorer output
+
+
+============================================================
+5. DATA FLOW
+============================================================
+Step 1 - Seed rules
+- CSV files in [seeds](D:/layout_project/seeds) store structured planning data
+
+Step 2 - Database build
+- [build_db.py](D:/layout_project/db/build_db.py) ingests all CSV files
+- Creates [floorplan.db](D:/layout_project/db/floorplan.db)
+- Exports [schema.sql](D:/layout_project/db/schema.sql)
+
+Step 3 - Database validation
+- [validate_db.py](D:/layout_project/db/validate_db.py)
+- Confirms tables, row counts, important columns, and critical rule presence
+
+Step 4 - Synthetic sample generation
+- [generate_training_data.py](D:/layout_project/generate_training_data.py)
+- Produces [floor_plan_samples.parquet](D:/layout_project/training_data/floor_plan_samples.parquet)
+
+Step 5 - Colab model training
+- [colab_training.ipynb](D:/layout_project/colab_training.ipynb)
+- Upload parquet
+- Train XGBoost scorer
+- Train Keras dimension model
+- Save SHAP explainer
+
+Step 6 - Local model artifacts
+- Files stored in [models](D:/layout_project/models)
+
+Step 7 - Engine generation
+- [engine.py](D:/layout_project/engine/engine.py)
+- Input params:
+  plot size, bhk, facing, district, seed
+- Output:
+  FloorPlan object with rooms, walls, doors, windows, materials,
+  Baker principles, scores, and explanations
+
+Step 8 - Renderer
+- Future [renderer](D:/layout_project/renderer) module
+- Will convert FloorPlan into professional plan drawings
+
+Step 9 - App
+- Future Streamlit app
+- Will expose inputs, generation flow, preview, and export
+
+
+============================================================
+6. ENGINE WORKFLOW (PHASE 4)
+============================================================
+The intended engine pipeline is:
+
+1. Load models
+- XGBoost scorer
+- Keras dimension predictor
+- SHAP explainer
+
+2. Query database context
+- setbacks
+- climate zone
+- window orientation scores
+- material recommendations
+- Baker principles
+
+3. Compute net buildable envelope
+- plot_w / plot_d
+- minus setbacks
+- result: net_w / net_d
+
+4. Predict room dimensions
+- Uses room_dimensions.h5
+- Produces room-specific width/depth candidates
+
+5. Place rooms
+- Current implementation uses horizontal bands
+- Future refinement must make this distributionally closer to valid
+  training layouts
+
+6. Build wall network
+- Convert room rectangles into shared interior walls + exterior walls
+
+7. Place doors
+- Uses required circulation logic
+- Door width comes from passage_dimensions DB
+
+8. Place windows
+- Uses climate orientation scores from climate_data
+- Places windows on best exterior walls
+- Places ventilators in wet rooms
+
+9. Build scorer feature vector
+- 74 columns in exact XGBoost order
+
+10. Score and explain
+- score_valid from XGBoost
+- score_vastu / score_nbc / score_circulation / score_adjacency in Python
+- SHAP top features for explainability
+
+
+============================================================
+7. SYNTHETIC TRAINING DATA DESIGN
+============================================================
+Training data columns fall into 4 groups:
+
+Input geometry/context
+- plot_w, plot_d, plot_area
+- net_w, net_d, net_area
+- bhk, facing_code, climate_code
+
+Per-room features
+- width
+- depth
+- area
+- centroid x percentage
+- centroid y percentage
+
+Violation labels
+- viol_overlap
+- viol_nbc_area
+- viol_nbc_width
+- viol_kitchen_bedroom
+- viol_toilet_kitchen
+- viol_toilet_dining
+- viol_vastu_kitchen_sw
+- viol_vastu_master_ne
+- viol_living_not_adjacent_verandah
+- viol_master_toilet_not_adjacent
+
+Score labels
+- score_vastu
+- score_nbc
+- score_circulation
+- score_adjacency
+- score_overall
+- is_valid
+
+
+============================================================
+8. KNOWN ENGINE ISSUE RIGHT NOW
+============================================================
+Important current state:
+- The engine's rule-based score_overall can reach 1.0
+- But the ML scorer can still return near 0.0
+
+Why:
+- The scorer was trained on synthetic layouts with a specific spatial
+  distribution
+- Even if the engine plan is architecturally reasonable, if the room
+  centroids / sizes / arrangement differ from the learned valid cluster,
+  XGBoost will still classify it as invalid
+- Additionally, the model includes plot_w/plot_d/net_w/net_d features. If
+  the training set contains no valid examples for a plot-size band, the
+  classifier will reject that band regardless of reasonable geometry.
+
+Observed mismatch for current 12x15 2BHK Coimbatore test:
+- score_valid is still approximately 0.0
+- score_overall can be high
+- This means deterministic rule checks and learned validity are not yet
+  aligned
+- Confirmed training distribution gap:
+  - Valid 2BHK plot_area values present: 360, 432, 600 sqm
+  - Valid 2BHK count for plot_area 150-220 sqm: 0
+
+Key learned 2BHK valid pattern from training:
+- masterbedr_cx_pct ~ 0.134
+- masterbedr_cy_pct ~ 0.108
+- toiletatta_cx_pct ~ 0.049
+- toiletatta_cy_pct ~ 0.279
+- bedroom2_cx_pct ~ 0.386
+- bedroom2_cy_pct ~ 0.092
+- living_cx_pct ~ 0.149
+- living_cy_pct ~ 0.740
+- kitchen_cx_pct ~ 0.818
+- kitchen_cy_pct ~ 0.799
+- verandah_cy_pct ~ 0.942
+- toiletcomm_cx_pct ~ 0.763
+- toiletcomm_cy_pct ~ 0.550
+
+This indicates the next engine fix should be layout-distribution driven,
+not just code-validity driven.
+
+
+============================================================
+9. CURRENT PROJECT TREE
+============================================================
+High-level project tree:
+
+D:\layout_project
+|-- db
+|   |-- build_db.py
+|   |-- floorplan.db
+|   |-- schema.sql
+|   `-- validate_db.py
+|-- engine
+|   `-- engine.py
+|-- models
+|   |-- constraint_scorer.pkl
+|   |-- room_dimensions.h5
+|   `-- shap_explainer.pkl
+|-- renderer
+|   `-- renderer.py
+|-- outputs
+|   |-- plan_Coimbatore_2BHK_N.png
+|   |-- plan_Chennai_3BHK_N.png
+|   `-- plan_Madurai_4BHK_N.png
+|-- seeds
+|   |-- adjacency_rules.csv
+|   |-- baker_principles.csv
+|   |-- circulation_zones.csv
+|   |-- climate_data.csv
+|   |-- entry_sequence_rules.csv
+|   |-- materials_db.csv
+|   |-- movement_paths.csv
+|   |-- nbc_codes.csv
+|   |-- passage_dimensions.csv
+|   |-- plot_configurations.csv
+|   `-- tn_setbacks.csv
+|-- tests
+|-- training_data
+|   `-- floor_plan_samples.parquet
+|-- activate.bat
+|-- colab_training.ipynb
+|-- generate_training_data.py
+|-- inspect_seeds.py
+|-- README.md
+|-- requirements.txt
+`-- project.txt
+
+Important support / debug scripts currently present at root:
+- diagnose.py
+- diagnose2.py
+- fix2.py
+- fix3.py
+- fix3rules.py
+- fix4.py
+- fix5.py
+- fix_feature_vector.py
+- fix_feature_vector2.py
+- fix_final.py
+- fix_layout_rules.py
+- fix_place_rooms.py
+- fix_script.py
+- run_diagnostic_temp.py
+- verify_placement_temp.py
+- wire_and_patch.py
+- wire_db.py
+
+These are useful for debugging history, but they are not final product
+modules.
+
+
+============================================================
+10. RECOMMENDED NEXT STEPS
+============================================================
+Immediate next step:
+- Phase 4: resolve scorer/training distribution mismatch
+  (either regenerate training data to include 12x15m-class plots with
+  valid 2BHK samples, or retrain the scorer to reduce dependence on
+  absolute plot size features).
+
+After that:
+- Phase 6 app.py (Streamlit)
+  - user form
+  - generate button
+  - plan preview
+  - scores and SHAP explanation
+  - export flow
+
+
+============================================================
+11. FINAL STATE SNAPSHOT
+============================================================
+Completed and verified:
+OK Phase 0  - 11 CSV seed files in seeds\\
+OK Phase 1  - SQLite DB with 11 tables, 1,634 rows, indexes, validation
+OK Phase 2  - 50,000 synthetic samples in parquet
+OK Phase 3  - 3 trained models in models\\
+OK Phase 5  - renderer.py generates PNG drawings
+
+Next:
+-> Phase 4 - engine.py
+-> Phase 6 - app.py (Streamlit)
+
