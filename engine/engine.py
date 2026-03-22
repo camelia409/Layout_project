@@ -15,6 +15,11 @@ MODELS_DIR = os.path.join(BASE_DIR, 'models')
 WALL_EXTERIOR = 0.23
 WALL_INTERIOR = 0.115
 
+WALL_EXT = 0.230
+WALL_INT = 0.115
+HALF_EXT = 0.115
+HALF_INT = 0.0575
+
 FACING_MAP  = {'N': 0, 'S': 1, 'E': 2, 'W': 3}
 CLIMATE_MAP = {'Hot_Humid': 0, 'Hot_Dry': 1, 'Composite': 2, 'Warm_Humid': 3}
 ROAD_SIDE = {'N': 'north', 'S': 'south', 'E': 'east', 'W': 'west'}
@@ -39,6 +44,473 @@ NBC_MIN_WIDTH = {
     'toilet_attached': 1.2, 'toilet_common': 1.2,
     'verandah': 1.5, 'utility': 1.0, 'dining': 1.8,
 }
+
+ROOM_UNIVERSE = [
+    "master_bedroom", "toilet_attached", "living", "kitchen", "verandah",
+    "bedroom_2", "bedroom_3", "dining", "toilet_common", "utility", "pooja", "bedroom_4", "store",
+]
+
+HARDCODED_DEFAULTS = {
+    "master_bedroom": (3.2, 3.0),
+    "bedroom_2": (2.9, 2.9),
+    "bedroom_3": (2.7, 2.7),
+    "bedroom_4": (2.7, 2.7),
+    "living": (4.2, 3.6),
+    "dining": (2.6, 2.4),
+    "kitchen": (2.6, 2.4),
+    "toilet_attached": (1.5, 1.5),
+    "toilet_common": (1.4, 1.4),
+    "utility": (1.6, 1.4),
+    "verandah": (0.0, 1.5),
+    "pooja": (1.2, 1.2),
+    "store": (1.5, 1.2),
+}
+
+ROOM_ZONE = {
+    "verandah": "public_zone", "living": "public_zone", "dining": "public_zone", "pooja": "public_zone",
+    "master_bedroom": "private_zone", "bedroom_2": "private_zone", "bedroom_3": "private_zone", "bedroom_4": "private_zone",
+    "kitchen": "wet_zone", "utility": "wet_zone",
+    "toilet_attached": "service_zone", "toilet_common": "service_zone", "store": "service_zone",
+}
+
+def _interval_union(ivs, tol=1e-6):
+    if not ivs:
+        return []
+    ivs = sorted((min(a, b), max(a, b)) for a, b in ivs)
+    out = [ivs[0]]
+    for a, b in ivs[1:]:
+        la, lb = out[-1]
+        if a <= lb + tol:
+            out[-1] = (la, max(lb, b))
+        else:
+            out.append((a, b))
+    return out
+
+def _adj(a, b, tol=0.05):
+    ax0, ay0, ax1, ay1 = a["x"], a["y"], a["x"] + a["w"], a["y"] + a["d"]
+    bx0, by0, bx1, by1 = b["x"], b["y"], b["x"] + b["w"], b["y"] + b["d"]
+    if abs(ax1 - bx0) <= tol or abs(bx1 - ax0) <= tol:
+        if min(ay1, by1) - max(ay0, by0) > tol:
+            return True
+    if abs(ay1 - by0) <= tol or abs(by1 - ay0) <= tol:
+        if min(ax1, bx1) - max(ax0, bx0) > tol:
+            return True
+    return False
+
+def _wall_stats(pl, net_w, net_d, tol=0.05):
+    rooms = list(pl.keys())
+    north, south, east, west = [], [], [], []
+    for rt in rooms:
+        a = pl[rt]
+        x0, y0 = a["x"], a["y"]
+        x1, y1 = x0 + a["w"], y0 + a["d"]
+        if abs(y1 - net_d) <= tol:
+            north.append((x0, x1))
+        if abs(y0 - 0.0) <= tol:
+            south.append((x0, x1))
+        if abs(x1 - net_w) <= tol:
+            east.append((y0, y1))
+        if abs(x0 - 0.0) <= tol:
+            west.append((y0, y1))
+    north_u = _interval_union(north, tol=tol)
+    south_u = _interval_union(south, tol=tol)
+    east_u = _interval_union(east, tol=tol)
+    west_u = _interval_union(west, tol=tol)
+    ext_c = len(north_u) + len(south_u) + len(east_u) + len(west_u)
+    ext_l = sum(b - a for a, b in north_u + south_u + east_u + west_u)
+
+    seen, int_c, int_l = set(), 0, 0.0
+    for i, ra in enumerate(rooms):
+        a = pl[ra]
+        ax0, ay0, ax1, ay1 = a["x"], a["y"], a["x"] + a["w"], a["y"] + a["d"]
+        for rb in rooms[i + 1:]:
+            b = pl[rb]
+            bx0, by0, bx1, by1 = b["x"], b["y"], b["x"] + b["w"], b["y"] + b["d"]
+            if abs(ax1 - bx0) <= tol or abs(bx1 - ax0) <= tol:
+                y0 = max(ay0, by0)
+                y1 = min(ay1, by1)
+                if y1 - y0 > tol:
+                    x = ax1 if abs(ax1 - bx0) <= tol else bx1
+                    key = ("V", round(x, 3), round(y0, 3), round(y1, 3))
+                    if key not in seen:
+                        seen.add(key); int_c += 1; int_l += (y1 - y0)
+            if abs(ay1 - by0) <= tol or abs(by1 - ay0) <= tol:
+                x0 = max(ax0, bx0)
+                x1 = min(ax1, bx1)
+                if x1 - x0 > tol:
+                    y = ay1 if abs(ay1 - by0) <= tol else by1
+                    key = ("H", round(y, 3), round(x0, 3), round(x1, 3))
+                    if key not in seen:
+                        seen.add(key); int_c += 1; int_l += (x1 - x0)
+    return int(ext_c), int(int_c), float(round(ext_l, 3)), float(round(int_l, 3))
+
+def _rotate(rooms_n, net_w, net_d, facing):
+    if facing == "N":
+        return rooms_n
+    out = []
+    if facing == "S":
+        for rt, x, y, w, d in rooms_n:
+            out.append((rt, x, round(net_d - y - d, 2), w, d))
+        return out
+    if facing == "E":
+        for rt, x, y, w, d in rooms_n:
+            out.append((rt, round(y, 2), round(net_w - x - w, 2), d, w))
+        return out
+    for rt, x, y, w, d in rooms_n:
+        out.append((rt, round(net_d - y - d, 2), round(x, 2), d, w))
+    return out
+
+def _place_rooms(net_w, net_d, bhk, t, rng, facing="N", err_p=0.05):
+    reference_net_area = 108.0
+    tol = 0.05
+    step = 0.1
+
+    # Local room program used only by placement. This keeps the rewrite
+    # contained to this function as requested.
+    bhk_rooms = {
+        1: [
+            "verandah", "living", "dining", "kitchen", "utility",
+            "toilet_common", "master_bedroom", "toilet_attached",
+        ],
+        2: [
+            "verandah", "living", "dining", "kitchen", "utility",
+            "toilet_common", "master_bedroom", "toilet_attached",
+            "bedroom_2",
+        ],
+        3: [
+            "verandah", "living", "dining", "kitchen", "utility",
+            "toilet_common", "master_bedroom", "toilet_attached",
+            "bedroom_2", "bedroom_3", "pooja",
+        ],
+        4: [
+            "verandah", "living", "dining", "kitchen", "utility",
+            "toilet_common", "master_bedroom", "toilet_attached",
+            "bedroom_2", "bedroom_3", "bedroom_4", "pooja", "store",
+        ],
+    }
+
+    rooms = list(bhk_rooms.get(bhk, ROOM_LISTS.get(bhk, [])))
+    net_area = float(net_w * net_d)
+    area_scale_factor = max(1.0, net_area / reference_net_area)
+    small_plot = net_area < 90.0
+    ews_plot = net_area < 50.0
+
+    if ews_plot:
+        rooms = [
+            r for r in rooms if r not in
+            ("dining", "pooja", "store", "bedroom_2", "bedroom_3", "bedroom_4", "utility")
+        ]
+        bhk = 1
+
+    if small_plot:
+        rooms = [r for r in rooms if r not in ("dining", "pooja", "store")]
+
+    room_rules = {
+        "master_bedroom": {"min_area": 9.5, "min_width": 2.8},
+        "bedroom_2": {"min_area": 7.5, "min_width": 2.4},
+        "bedroom_3": {"min_area": 7.5, "min_width": 2.4},
+        "bedroom_4": {"min_area": 7.5, "min_width": 2.4},
+        "living": {"min_area": 10.0, "min_width": 3.0},
+        "dining": {"min_area": 6.0, "min_width": 2.4},
+        "kitchen": {"min_area": 4.5, "min_width": 1.8},
+        "toilet_attached": {"min_area": 2.3, "min_width": 1.1},
+        "toilet_common": {"min_area": 2.3, "min_width": 1.1},
+        "utility": {"min_area": 2.5, "min_width": 1.2},
+        "verandah": {"min_area": net_w * 1.5, "min_width": net_w},
+        "pooja": {"min_area": 1.5, "min_width": 1.0},
+        "store": {"min_area": 2.0, "min_width": 1.0},
+    }
+
+    def target_area(rt):
+        if rt == "verandah":
+            return float(net_w * 1.5)
+        return float(room_rules[rt]["min_area"] * area_scale_factor)
+
+    def scaled_dims(rt):
+        base_w, base_d = t.get(rt, HARDCODED_DEFAULTS.get(rt, (2.4, 2.4)))
+        base_w = max(float(base_w), 0.1)
+        base_d = max(float(base_d), 0.1)
+        ratio = _clamp(base_w / base_d, 0.55, 2.40)
+        if small_plot:
+            # Avoid extreme wide/shallow proportions on small plots; improves scorer alignment.
+            ratio = _clamp(ratio, 0.75, 1.60)
+        area = target_area(rt)
+        min_w = float(room_rules[rt]["min_width"])
+        w = max(min_w, math.sqrt(area * ratio))
+        d = area / w
+        if w * d < area:
+            d = area / w
+        return round(float(w), 2), round(float(d), 2)
+
+    def overlaps(a, b, pad=tol):
+        ax0, ay0, ax1, ay1 = a
+        bx0, by0, bx1, by1 = b
+        return (
+            ax0 < bx1 - pad and
+            ax1 > bx0 + pad and
+            ay0 < by1 - pad and
+            ay1 > by0 + pad
+        )
+
+    placed = []
+    skipped_overlap = False
+
+    def can_place(x, y, w, d, x_min, x_max, y_min, y_max):
+        if x < x_min - 1e-6 or y < y_min - 1e-6:
+            return False
+        if x + w > x_max + 1e-6 or y + d > y_max + 1e-6:
+            return False
+        rect = (x, y, x + w, y + d)
+        for _, px, py, pw, pd in placed:
+            if overlaps(rect, (px, py, px + pw, py + pd)):
+                return False
+        return True
+
+    def try_add(rt, x, y, w, d, x_min, x_max, y_min, y_max):
+        nonlocal skipped_overlap
+        attempts = [(0.0, 0.0)]
+        for i in range(1, 6):
+            delta = round(i * step, 2)
+            attempts.extend([
+                (delta, 0.0), (-delta, 0.0),
+                (0.0, delta), (0.0, -delta),
+                (delta, delta), (-delta, delta),
+            ])
+        for dx, dy in attempts:
+            xx = round(x + dx, 2)
+            yy = round(y + dy, 2)
+            if can_place(xx, yy, w, d, x_min, x_max, y_min, y_max):
+                placed.append((rt, xx, yy, round(w, 2), round(d, 2)))
+                return True
+        skipped_overlap = True
+        return False
+
+    # y=0 south, y=net_d north. Bands are ordered north to south.
+    b1_h = 1.5
+    remaining_after_entry = max(net_d - b1_h, 3.5)
+    b2_h = round(remaining_after_entry * float(rng.uniform(0.35, 0.40)), 2)
+    b3_h = round(remaining_after_entry * float(rng.uniform(0.25, 0.30)), 2)
+    b4_h = round(net_d - b1_h - b2_h - b3_h, 2)
+
+    private_depth_need = max(
+        [scaled_dims("master_bedroom")[1]] +
+        [scaled_dims(r)[1] for r in ("bedroom_2", "bedroom_3", "bedroom_4") if r in rooms] +
+        ([scaled_dims("toilet_attached")[1]] if "toilet_attached" in rooms else [0.0])
+    )
+    min_private = max(2.8, private_depth_need)
+    if b4_h < min_private:
+        deficit = round(min_private - b4_h, 2)
+        take_b3 = min(deficit, max(0.0, b3_h - 2.0))
+        b3_h = round(b3_h - take_b3, 2)
+        deficit = round(deficit - take_b3, 2)
+        if deficit > 0:
+            take_b2 = min(deficit, max(0.0, b2_h - 2.4))
+            b2_h = round(b2_h - take_b2, 2)
+            deficit = round(deficit - take_b2, 2)
+        b4_h = round(net_d - b1_h - b2_h - b3_h, 2)
+
+    y_b4 = 0.0
+    y_b3 = round(b4_h, 2)
+    y_b2 = round(b4_h + b3_h, 2)
+    y_b1 = round(net_d - b1_h, 2)
+
+    if small_plot:
+        y_b3 = round(y_b3 + 0.115, 2)
+        b3_h = round(max(b3_h - 0.115, 0.5), 2)
+        y_b2 = round(y_b3 + b3_h, 2)
+
+    if "verandah" in rooms:
+        try_add("verandah", 0.0, y_b1, net_w, b1_h, 0.0, net_w, y_b1, net_d)
+
+    if small_plot or "dining" not in rooms:
+        try_add("living", 0.0, y_b2, round(net_w, 2), round(b2_h, 2), 0.0, net_w, y_b2, y_b1)
+    else:
+        living_area = target_area("living")
+        dining_area = target_area("dining")
+        living_share = float(rng.uniform(0.55, 0.65))
+        living_w = round(net_w * living_share, 2)
+        dining_w = round(net_w - living_w, 2)
+        living_req_w = max(room_rules["living"]["min_width"], living_area / max(b2_h, 0.1))
+        dining_req_w = max(room_rules["dining"]["min_width"], dining_area / max(b2_h, 0.1))
+        living_w = max(living_w, living_req_w)
+        dining_w = max(dining_w, dining_req_w)
+        total_public_w = living_w + dining_w
+        if total_public_w > net_w:
+            # Scale both down proportionally first
+            scale = net_w / total_public_w
+            living_w = round(living_w * scale, 2)
+            dining_w = round(net_w - living_w, 2)
+
+        # Now enforce minimums — but only if the plot can physically fit both
+        min_liv = room_rules["living"]["min_width"]
+        min_din = room_rules["dining"]["min_width"]
+
+        if net_w >= (min_liv + min_din):
+            # Plot can fit both rooms with minimums
+            living_w = max(living_w, min_liv)
+            dining_w = round(net_w - living_w, 2)
+            if dining_w < min_din:
+                dining_w = min_din
+                living_w = round(net_w - dining_w, 2)
+            # Final floor — living must never go below minimum
+            living_w = max(living_w, min_liv)
+            dining_w = round(net_w - living_w, 2)
+        else:
+            # Plot is too narrow for both rooms at minimum widths
+            # Merge into single living space (same as small_plot path)
+            living_w = round(net_w, 2)
+            dining_w = 0.0
+
+        if dining_w > 0:
+            try_add("living", 0.0, y_b2, living_w, b2_h,
+                    0.0, net_w, y_b2, y_b1)
+            try_add("dining", living_w, y_b2, dining_w, b2_h,
+                    0.0, net_w, y_b2, y_b1)
+        else:
+            # Merged living+dining
+            try_add("living", 0.0, y_b2, round(net_w, 2), round(b2_h, 2),
+                    0.0, net_w, y_b2, y_b1)
+
+    if any(r in rooms for r in ("toilet_common", "kitchen", "utility", "pooja", "store")):
+        tc_w = 0.0
+        if "toilet_common" in rooms:
+            tc_w_calc, _ = scaled_dims("toilet_common")
+            tc_w = round(max(tc_w_calc, room_rules["toilet_common"]["min_width"]), 2)
+            tc_w = round(min(tc_w, net_w * 0.35), 2)
+            try_add("toilet_common", 0.0, y_b3, tc_w, b3_h, 0.0, net_w, y_b3, y_b2)
+
+        cluster_x = round(tc_w, 2)
+        cluster_w = round(max(net_w - cluster_x, 0.0), 2)
+        if cluster_w > 0.6:
+            utility_h = 0.0
+            if "utility" in rooms or "store" in rooms:
+                util_area = target_area("utility") if "utility" in rooms else 0.0
+                store_area = target_area("store") if ("store" in rooms and not small_plot) else 0.0
+                bottom_area = util_area + store_area
+                utility_h = round(max(1.2, bottom_area / max(cluster_w, 0.1)), 2)
+                utility_h = round(min(utility_h, b3_h * 0.45), 2)
+            top_h = round(b3_h - utility_h, 2)
+            if top_h < 1.0:
+                top_h = round(b3_h, 2)
+                utility_h = 0.0
+            pooja_w = 0.0
+            if "pooja" in rooms and not small_plot and top_h >= 1.0:
+                pooja_area = target_area("pooja")
+                pooja_w = round(max(room_rules["pooja"]["min_width"], pooja_area / max(top_h, 0.1)), 2)
+                pooja_w = round(min(pooja_w, cluster_w * 0.30), 2)
+            kitchen_w = round(max(cluster_w - pooja_w, 0.0), 2)
+            kitchen_w = max(kitchen_w, room_rules["kitchen"]["min_width"])
+            if "kitchen" in rooms and kitchen_w >= room_rules["kitchen"]["min_width"]:
+                try_add("kitchen", cluster_x, round(y_b3 + utility_h, 2), kitchen_w, top_h,
+                        cluster_x, net_w, y_b3, y_b2)
+            if pooja_w > 0.0 and "pooja" in rooms and not small_plot:
+                try_add("pooja", round(cluster_x + kitchen_w, 2), round(y_b3 + utility_h, 2), pooja_w, top_h,
+                        cluster_x, net_w, y_b3, y_b2)
+            if utility_h > 0.0:
+                store_w = 0.0
+                if "store" in rooms and not small_plot:
+                    store_area = target_area("store")
+                    store_w = round(max(room_rules["store"]["min_width"], store_area / max(utility_h, 0.1)), 2)
+                    store_w = round(min(store_w, cluster_w * 0.30), 2)
+                utility_w = round(max(cluster_w - store_w, 0.0), 2)
+                if "utility" in rooms and utility_w >= room_rules["utility"]["min_width"]:
+                    try_add("utility", cluster_x, y_b3, utility_w, utility_h,
+                            cluster_x, net_w, y_b3, y_b2)
+                if store_w > 0.0 and "store" in rooms and not small_plot:
+                    try_add("store", round(cluster_x + utility_w, 2), y_b3, store_w, utility_h,
+                            cluster_x, net_w, y_b3, y_b2)
+
+    private_rooms = ["master_bedroom"]
+    if "toilet_attached" in rooms:
+        private_rooms.append("toilet_attached")
+    for rt in ("bedroom_2", "bedroom_3", "bedroom_4"):
+        if rt in rooms:
+            private_rooms.append(rt)
+
+    desired_widths = {}
+    for rt in private_rooms:
+        w, _ = scaled_dims(rt)
+        desired_widths[rt] = round(w, 2)
+
+    total_private_w = sum(desired_widths.values())
+    if total_private_w > net_w and total_private_w > 0:
+        scale = net_w / total_private_w
+        for rt in private_rooms:
+            desired_widths[rt] = round(max(room_rules[rt]["min_width"], desired_widths[rt] * scale), 2)
+        for rt in private_rooms:
+            desired_widths[rt] = max(desired_widths[rt], room_rules[rt]["min_width"])
+        total_after = sum(desired_widths.values())
+        if total_after > net_w:
+            # Allow tiny overshoot caused by per-room rounding; shrink the last room to fit.
+            overshoot = float(total_after - net_w)
+            if overshoot <= 0.05 and private_rooms:
+                last = private_rooms[-1]
+                desired_widths[last] = round(max(room_rules[last]["min_width"], desired_widths[last] - overshoot), 2)
+                total_after = sum(desired_widths.values())
+            if total_after > net_w + 0.01:
+                return {}, "plot_too_small", b4_h, y_b3, y_b2
+
+    total_private_w = sum(desired_widths.values())
+    if total_private_w < net_w and total_private_w > 0:
+        growables = [rt for rt in private_rooms if rt != "toilet_attached"]
+        extra_w = round(net_w - total_private_w, 2)
+        per_room_add = round(extra_w / max(len(growables), 1), 2)
+        for rt in growables:
+            desired_widths[rt] = round(desired_widths[rt] + per_room_add, 2)
+        remainder = round(net_w - sum(desired_widths.values()), 2)
+        if growables and abs(remainder) > 0.001:
+            desired_widths[growables[-1]] = round(desired_widths[growables[-1]] + remainder, 2)
+
+    x_cursor = 0.0
+    private_y_offsets = {
+        "master_bedroom": 0.0,
+        "toilet_attached": 0.0,
+        # Stagger bedroom y positions slightly to avoid "bedroom row" patterns.
+        # Offsets reduce depth accordingly so room tops still align to band 3.
+        "bedroom_2": 0.3,
+        "bedroom_3": 0.15,
+        "bedroom_4": 0.0,
+    }
+    for rt in private_rooms:
+        w = round(min(desired_widths[rt], max(net_w - x_cursor, 0.6)), 2)
+        _, d0 = scaled_dims(rt)
+        y_off = private_y_offsets.get(rt, 0.0)
+        if rt == "toilet_attached":
+            # Toilet occupies the south portion of its column; keep top below band 3.
+            d = round(max(b4_h * 0.55, 0.8), 2)
+        elif rt in ("bedroom_2", "bedroom_3", "bedroom_4"):
+            # Bedrooms extend to the top of the private band (minus stagger offset).
+            d = round(max(b4_h - y_off, 0.8), 2)
+        else:
+            # Default: cap by scaled dimension prediction.
+            d = round(min(d0, max(b4_h - y_off, 0.8)), 2)
+        try_add(rt, round(x_cursor, 2), round(y_b4 + y_off, 2), w, d, 0.0, net_w, y_b4, y_b3)
+        x_cursor = round(x_cursor + w, 2)
+
+    rn = _rotate(placed, net_w, net_d, facing)
+    err = "overlap_skip" if skipped_overlap else None
+    if float(rng.random()) < float(err_p):
+        candidates = [rt for rt in rooms if rt in NBC_MIN_AREA]
+        if candidates:
+            rt = str(rng.choice(candidates))
+            for i, tup in enumerate(rn):
+                if tup[0] == rt:
+                    rtt, xx, yy, ww, dd = tup
+                    rn[i] = (rtt, xx, yy, ww, round(max(0.6, dd * 0.75), 2))
+                    err = "nbc_area_violation"
+                    break
+
+    pl = {}
+    for rt, x, y, w, d in rn:
+        pl[rt] = {
+            "x": float(round(x, 3)),
+            "y": float(round(y, 3)),
+            "w": float(round(w, 3)),
+            "d": float(round(d, 3)),
+        }
+        pl[rt]["cx"] = float(round(pl[rt]["x"] + pl[rt]["w"] / 2.0, 3))
+        pl[rt]["cy"] = float(round(pl[rt]["y"] + pl[rt]["d"] / 2.0, 3))
+    return pl, err, b4_h, y_b3, y_b2
 
 REQUIRED_CONNECTIONS = [
     ('verandah', 'living', 'archway', 1.20),
@@ -164,6 +636,12 @@ class FloorPlan:
     shap_values: dict = field(default_factory=dict)
     materials: List = field(default_factory=list)
     baker_principles: List = field(default_factory=list)
+    wall_geometry: object = None  # Shapely geometry, set after generate()
+    placement: dict = field(default_factory=dict)
+    band_b4_h: float = 0.0
+    band_y_b3: float = 0.0
+    band_y_b2: float = 0.0
+    ml_debug: dict = field(default_factory=dict)
     generation_time_s: float = 0.0
     seed: int = 42
 
@@ -188,7 +666,20 @@ class ModelLoader:
                 if not os.path.exists(path):
                     raise FileNotFoundError(f'Missing model: {path}\nDownload from Colab and place in models\\')
             cls._clf = joblib.load(paths['scorer'])
-            cls._dim_model = tf.keras.models.load_model(paths['dims'])
+            # Inference-only load to avoid Keras H5 deserialization issues across versions.
+            # Inference-only load; be tolerant to Keras version diffs across environments.
+            try:
+                cls._dim_model = tf.keras.models.load_model(paths['dims'], compile=False)
+            except Exception:
+                # Some saved models include Dense(..., quantization_config=None); ignore that arg.
+                from tensorflow.keras.layers import Dense as _Dense
+                class DenseCompat(_Dense):
+                    def __init__(self, *args, **kwargs):
+                        kwargs.pop('quantization_config', None)
+                        super().__init__(*args, **kwargs)
+                cls._dim_model = tf.keras.models.load_model(
+                    paths['dims'], compile=False, custom_objects={'Dense': DenseCompat}
+                )
             cls._explainer = joblib.load(paths['shap'])
             cls._loaded = True
             print('OK')
@@ -307,27 +798,36 @@ def get_baker_principles(plot_area: float, climate_zone: str) -> List[dict]:
 
 # SECTION 5 — DIMENSION MODEL PREDICTION
 def predict_room_dims(plot_w, plot_d, bhk, facing_code, climate_code, net_w, net_d, dim_model) -> dict:
-    arr = np.array([[plot_w, plot_d, plot_w * plot_d, net_w, net_d, net_w * net_d, bhk, facing_code, climate_code]], dtype=float)
+    """Predict room dimension templates (width, depth) using the Keras model.
+
+    IMPORTANT: Output index mapping must match the Colab DIM_TARGET_COLS order:
+      0..25 = 13 rooms * (w,d)
+      26..38 = areas (ignored here)
+    """
+    arr = np.array([[plot_w, plot_d, plot_w * plot_d, net_w, net_d, net_w * net_d, bhk,
+                     facing_code, climate_code]], dtype=float)
     pred = np.asarray(dim_model.predict(arr, verbose=0)[0], dtype=float)
+
     raw = {
         'master_bedroom': (pred[0], pred[1]),
-        'toilet_attached': (pred[3], pred[4]),
-        'living': (pred[6], pred[7]),
-        'kitchen': (pred[9], pred[10]),
-        'verandah': (pred[12], pred[13]),
-        'bedroom_2': (pred[15], pred[16]),
-        'bedroom_3': (pred[18], pred[19]),
-        'dining': (pred[21], pred[22]),
-        'toilet_common': (pred[24], pred[25]),
-        'utility': (pred[27], pred[28]),
-        'pooja': (pred[30], pred[31]),
-        'bedroom_4': (pred[33], pred[34]),
-        'store': (pred[36], pred[37]),
+        'toilet_attached': (pred[2], pred[3]),
+        'living': (pred[4], pred[5]),
+        'kitchen': (pred[6], pred[7]),
+        'verandah': (pred[8], pred[9]),
+        'bedroom_2': (pred[10], pred[11]),
+        'bedroom_3': (pred[12], pred[13]),
+        'dining': (pred[14], pred[15]),
+        'toilet_common': (pred[16], pred[17]),
+        'utility': (pred[18], pred[19]),
+        'pooja': (pred[20], pred[21]),
+        'bedroom_4': (pred[22], pred[23]),
+        'store': (pred[24], pred[25]),
     }
+
     out = {}
     for room, (w, d) in raw.items():
         w = max(float(w), NBC_MIN_WIDTH.get(room, 1.0))
-        d = max(float(d), 1.0)
+        d = max(float(d), 0.8)
         if room in NBC_MIN_AREA and w * d < NBC_MIN_AREA[room]:
             d = NBC_MIN_AREA[room] / w + 0.1
         out[room] = (round(w, 2), round(d, 2))
@@ -335,25 +835,78 @@ def predict_room_dims(plot_w, plot_d, bhk, facing_code, climate_code, net_w, net
 
 
 # SECTION 6 — 4-BAND HORIZONTAL ROOM PLACEMENT
+def apply_wall_offsets(rooms_n, net_w, net_d):
+    """
+    Adjusts room (x, y, w, d) tuples to account for wall thickness.
+    Rooms are shrunk inward so gaps between them = wall thickness.
+
+    Rule:
+      Each room edge touching net boundary gets HALF_EXT offset.
+      Each room edge touching another room gets HALF_INT offset.
+
+    Since rooms in our layout share edges exactly (gap=0),
+    we classify each edge:
+      x == 0        -> touching west exterior wall
+      x+w == net_w  -> touching east exterior wall
+      y == 0        -> touching south exterior wall
+      y+d == net_d  -> touching north exterior wall
+      otherwise     -> touching interior wall
+    """
+    tol = 0.05  # tolerance for edge detection
+    adjusted = []
+    for room_type, x, y, w, d in rooms_n:
+        # Determine offsets for each edge
+        left_off   = HALF_EXT if x < tol else HALF_INT
+        right_off  = HALF_EXT if abs(x + w - net_w) < tol else HALF_INT
+        bottom_off = HALF_EXT if y < tol else HALF_INT
+        top_off    = HALF_EXT if abs(y + d - net_d) < tol else HALF_INT
+
+        new_x = round(x + left_off,   3)
+        new_y = round(y + bottom_off, 3)
+        new_w = round(w - left_off - right_off, 3)
+        new_d = round(d - bottom_off - top_off, 3)
+
+        # Safety: ensure minimum room size
+        new_w = max(new_w, 0.5)
+        new_d = max(new_d, 0.5)
+
+        adjusted.append((room_type, new_x, new_y, new_w, new_d))
+    return adjusted
+
 def place_rooms_in_bands(net_w, net_d, bhk, predicted_dims, facing) -> List[Room]:
     rooms_n = []
+    # Band 1: verandah
     b1_h = _clamp(predicted_dims.get('verandah', (net_w, 1.8))[1], 1.5, net_d * 0.22)
-    b2_h = _clamp(predicted_dims.get('living', (3.5, 2.8))[1], 2.4, net_d * 0.32)
+    b1_h = round(b1_h, 2)
+
+    # Band 3: service zone height from kitchen depth
     b3_h = _clamp(predicted_dims.get('kitchen', (2.5, 2.2))[1], 2.0, net_d * 0.28)
-    max_top = max(net_d - 2.5, 1.5)
-    if b1_h + b2_h + b3_h > max_top:
-        s = max_top / (b1_h + b2_h + b3_h)
-        b1_h, b2_h, b3_h = b1_h * s, b2_h * s, b3_h * s
-    b1_h, b2_h, b3_h = round(b1_h, 2), round(b2_h, 2), round(b3_h, 2)
-    b4_h = round(max(net_d - b1_h - b2_h - b3_h, 2.5), 2)
+    b3_h = round(b3_h, 2)
+
+    # Band 4: bedroom zone height from predicted dims (not remaining height)
+    _mb_d = round(predicted_dims.get('master_bedroom', (3.0, 2.8))[1], 2)
+    _ta_d = round(predicted_dims.get('toilet_attached', (1.5, 1.5))[1], 2) if 'toilet_attached' in ROOM_LISTS[bhk] else 0.0
+    _extra_beds = [r for r in ('bedroom_2', 'bedroom_3', 'bedroom_4') if r in ROOM_LISTS[bhk]]
+    _max_bed_d = max((predicted_dims.get(r, (2.5, 2.5))[1] for r in _extra_beds), default=_mb_d)
+    _private_col_h = round(_mb_d + _ta_d, 2)
+    b4_h = round(max(_private_col_h, _max_bed_d, 2.5), 2)
+    b4_h = round(min(b4_h, net_d * 0.55), 2)
+
+    # Band 2: ALL remaining space (no dead zone)
+    b2_h = round(net_d - b1_h - b3_h - b4_h, 2)
+    b2_h = max(b2_h, 2.4)
+
+    # Scale if total exceeds net_d
     total = b1_h + b2_h + b3_h + b4_h
     if total > net_d:
         s = net_d / total
-        b1_h, b2_h, b3_h = round(b1_h * s, 2), round(b2_h * s, 2), round(b3_h * s, 2)
+        b1_h = round(b1_h * s, 2)
+        b2_h = round(b2_h * s, 2)
+        b3_h = round(b3_h * s, 2)
         b4_h = round(net_d - b1_h - b2_h - b3_h, 2)
 
     y_b4 = 0.0
-    y_b3 = b4_h
+    y_b3 = round(b4_h, 2)
     y_b2 = round(b4_h + b3_h, 2)
     y_b1 = round(b4_h + b3_h + b2_h, 2)
 
@@ -368,13 +921,15 @@ def place_rooms_in_bands(net_w, net_d, bhk, predicted_dims, facing) -> List[Room
         pooja_w = round(min(predicted_dims.get('pooja', (1.2, 1.2))[0], svc_w), 2)
     band2_left = round((net_w - pooja_w) if pooja_w else lv_w, 2)
 
+    public_y = y_b3 if bhk == 2 else y_b2
+    public_d = round(y_b1 - y_b3, 2) if bhk == 2 else b2_h
     living_w = band2_left if 'dining' not in ROOM_LISTS[bhk] else round(max(band2_left * 0.58, NBC_MIN_WIDTH['living']), 2)
     living_w = min(living_w, band2_left)
-    rooms_n.append(('living', 0.0, y_b2, living_w, b2_h))
+    rooms_n.append(('living', 0.0, public_y, living_w, public_d))
 
     if 'dining' in ROOM_LISTS[bhk]:
         dining_w = round(max(band2_left - living_w, 0.6), 2)
-        rooms_n.append(('dining', living_w, y_b2, dining_w, b2_h))
+        rooms_n.append(('dining', living_w, public_y, dining_w, public_d))
     if 'pooja' in ROOM_LISTS[bhk]:
         rooms_n.append(('pooja', round(net_w - pooja_w, 2), y_b2, pooja_w, b2_h))
 
@@ -395,12 +950,13 @@ def place_rooms_in_bands(net_w, net_d, bhk, predicted_dims, facing) -> List[Room
 
         living_w = round(max(left_block_w * 0.62, NBC_MIN_WIDTH['living']), 2)
         living_w = round(min(living_w, left_block_w), 2)
+        public_d = round(y_b1 - y_b3, 2)
         for idx, item in enumerate(rooms_n):
             if item[0] == 'living':
-                rooms_n[idx] = ('living', 0.0, y_b2, living_w, b2_h)
+                rooms_n[idx] = ('living', 0.0, y_b3, living_w, public_d)
             elif item[0] == 'dining':
                 dining_w = round(max(left_block_w - living_w, 0.6), 2)
-                rooms_n[idx] = ('dining', living_w, y_b2, dining_w, b2_h)
+                rooms_n[idx] = ('dining', living_w, y_b3, dining_w, public_d)
 
         svc_x = round(net_w - svc_col_w, 2)
 
@@ -474,32 +1030,38 @@ def place_rooms_in_bands(net_w, net_d, bhk, predicted_dims, facing) -> List[Room
     # Place toilet_attached ABOVE master_bedroom (shared horizontal wall)
     # This satisfies adjacency_rules MUST_SHARE_WALL constraint from DB
     if 'toilet_attached' in ROOM_LISTS[bhk]:
+        if bhk == 2:
+            ta_w = mb_w
         rooms_n.append((
             'toilet_attached', 0.0, mb_d_actual,
             ta_w, ta_d_actual))
 
     extra = [r for r in ('bedroom_2', 'bedroom_3', 'bedroom_4')
              if r in ROOM_LISTS[bhk]]
-    # Use h5 model predicted width for each bedroom
     pred_w = {r: round(max(
                   predicted_dims.get(r, (2.5, 2.5))[0],
                   NBC_MIN_WIDTH.get(r, 2.1)), 2)
               for r in extra}
-    available = round(net_w - mb_w, 2)
+    pred_d = {r: round(max(
+                  predicted_dims.get(r, (2.5, 2.5))[1],
+                  NBC_MIN_AREA.get(r, 7.5) / pred_w[r]), 2)
+              for r in extra}
+    available_w = round(net_w - mb_w, 2)
     total_pred = sum(pred_w.values())
-    # Scale proportionally if predicted widths exceed available space
-    if total_pred > available and total_pred > 0:
-        scale = available / total_pred
-        pred_w = {r: round(max(w * scale,
+    if total_pred > available_w and total_pred > 0:
+        s = available_w / total_pred
+        pred_w = {r: round(max(w * s,
                                NBC_MIN_WIDTH.get(r, 2.1)), 2)
                   for r, w in pred_w.items()}
     x = round(mb_w, 2)
     for r in extra:
-        w = round(min(pred_w.get(r, 2.1), max(net_w - x, 0.6)), 2)
-        rooms_n.append((r, x, 0.0, w, b4_h))
+        w = round(min(pred_w[r], max(net_w - x, 0.6)), 2)
+        d = round(min(pred_d[r], b4_h), 2)
+        rooms_n.append((r, x, y_b4, w, d))
         x = round(x + w, 2)
 
     out = []
+    rooms_n = apply_wall_offsets(rooms_n, net_w, net_d)
     for rt, x, y, w, d in rooms_n:
         if facing == 'S':
             nx, ny, nw, nd = x, net_d - y - d, w, d
@@ -519,44 +1081,103 @@ def place_rooms_in_bands(net_w, net_d, bhk, predicted_dims, facing) -> List[Room
         out.append(Room(rt, nx, ny, nw, nd, area, cx_pct, cy_pct, _compass(cx_pct, cy_pct)))
     return out
 
+def build_wall_geometry(fp):
+    """
+    Builds Shapely wall mass from room voids.
+    After wall offset fix, rooms no longer fill net area.
+    Gaps between rooms = actual wall material.
+    Returns Shapely Polygon or MultiPolygon.
+    """
+    from shapely.geometry import box as shapely_box
+    from shapely.ops import unary_union
+    net_poly = shapely_box(0, 0, fp.net_w, fp.net_d)
+    room_voids = unary_union([
+        shapely_box(r.x, r.y, r.x + r.width, r.y + r.depth)
+        for r in fp.rooms
+    ])
+    wall_mass = net_poly.difference(room_voids)
+    return wall_mass
 
 # SECTION 7 — WALL NETWORK BUILDER
 def build_wall_network(rooms: List[Room], net_w: float, net_d: float) -> List[WallSegment]:
-    tol = 0.05
+    # Wall thickness tolerance: rooms now have WALL_INT (0.115m) gaps
+    # between them and HALF_EXT (0.115m) offsets to net boundary.
+    tol = 0.14      # gap detection (covers ~0.115m)
+    min_len = 0.10  # minimum wall segment length
+
     walls, seen = [], set()
+
+    # Interior walls: find near-parallel room edges separated by wall gap and
+    # place the wall segment at the midpoint of that gap.
     for i, a in enumerate(rooms):
         for b in rooms[i + 1:]:
+            # Vertical wall between rooms (side-by-side)
             if abs((a.x + a.width) - b.x) < tol or abs((b.x + b.width) - a.x) < tol:
-                y1, y2 = max(a.y, b.y), min(a.y + a.depth, b.y + b.depth)
-                if y2 - y1 > tol:
-                    x = round(b.x if abs((a.x + a.width) - b.x) < tol else a.x, 2)
-                    west = a.room_type if (a.x + a.width) <= (b.x + tol) else b.room_type
-                    east = b.room_type if west == a.room_type else a.room_type
-                    key = ('V', x, round(y1, 2), round(y2, 2))
+                y1 = max(a.y, b.y)
+                y2 = min(a.y + a.depth, b.y + b.depth)
+                if y2 - y1 > min_len:
+                    if abs((a.x + a.width) - b.x) < tol:
+                        x = round((a.x + a.width + b.x) / 2, 3)
+                        west, east = a.room_type, b.room_type
+                    else:
+                        x = round((b.x + b.width + a.x) / 2, 3)
+                        west, east = b.room_type, a.room_type
+                    key = ('V', x, round(y1, 3), round(y2, 3))
                     if key not in seen:
-                        walls.append(WallSegment(x, round(y1, 2), x, round(y2, 2), WALL_INTERIOR, 'interior', west, east, False))
+                        walls.append(WallSegment(x, round(y1, 2), x, round(y2, 2),
+                                                 WALL_INTERIOR, 'interior', west, east, False))
                         seen.add(key)
+
+            # Horizontal wall between rooms (stacked)
             if abs((a.y + a.depth) - b.y) < tol or abs((b.y + b.depth) - a.y) < tol:
-                x1, x2 = max(a.x, b.x), min(a.x + a.width, b.x + b.width)
-                if x2 - x1 > tol:
-                    y = round(b.y if abs((a.y + a.depth) - b.y) < tol else a.y, 2)
-                    south = a.room_type if (a.y + a.depth) <= (b.y + tol) else b.room_type
-                    north = b.room_type if south == a.room_type else a.room_type
-                    key = ('H', y, round(x1, 2), round(x2, 2))
+                x1 = max(a.x, b.x)
+                x2 = min(a.x + a.width, b.x + b.width)
+                if x2 - x1 > min_len:
+                    if abs((a.y + a.depth) - b.y) < tol:
+                        y = round((a.y + a.depth + b.y) / 2, 3)
+                        south, north = a.room_type, b.room_type
+                    else:
+                        y = round((b.y + b.depth + a.y) / 2, 3)
+                        south, north = b.room_type, a.room_type
+                    key = ('H', y, round(x1, 3), round(x2, 3))
                     if key not in seen:
-                        walls.append(WallSegment(round(x1, 2), y, round(x2, 2), y, WALL_INTERIOR, 'interior', south, north, False))
+                        walls.append(WallSegment(round(x1, 2), y, round(x2, 2), y,
+                                                 WALL_INTERIOR, 'interior', south, north, False))
                         seen.add(key)
+
+    # Exterior walls: create segments ON the net boundary, attributed to the
+    # nearest room edge within the exterior offset tolerance.
+    ext_tol = HALF_EXT + 0.03  # ~0.145m
     for r in rooms:
-        edges = [
-            ('N', r.x, r.y + r.depth, r.x + r.width, r.y + r.depth),
-            ('S', r.x, r.y, r.x + r.width, r.y),
-            ('W', r.x, r.y, r.x, r.y + r.depth),
-            ('E', r.x + r.width, r.y, r.x + r.width, r.y + r.depth),
-        ]
-        for _, x1, y1, x2, y2 in edges:
-            exterior = (abs(x1) < tol and abs(x2) < tol) or (abs(x1 - net_w) < tol and abs(x2 - net_w) < tol) or (abs(y1) < tol and abs(y2) < tol) or (abs(y1 - net_d) < tol and abs(y2 - net_d) < tol)
-            if exterior:
-                walls.append(WallSegment(round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2), WALL_EXTERIOR, 'exterior', r.room_type, 'outside', False))
+        # West boundary
+        if abs(r.x - HALF_EXT) < ext_tol or r.x < ext_tol:
+            key = ('VW', 0.0, round(r.y, 3), round(r.y + r.depth, 3), r.room_type)
+            if key not in seen and r.depth > min_len:
+                walls.append(WallSegment(0.0, round(r.y, 2), 0.0, round(r.y + r.depth, 2),
+                                         WALL_EXTERIOR, 'exterior', r.room_type, 'outside', False))
+                seen.add(key)
+        # East boundary
+        if abs((net_w - (r.x + r.width)) - HALF_EXT) < ext_tol or abs(r.x + r.width - (net_w - HALF_EXT)) < ext_tol:
+            key = ('VE', net_w, round(r.y, 3), round(r.y + r.depth, 3), r.room_type)
+            if key not in seen and r.depth > min_len:
+                walls.append(WallSegment(round(net_w, 2), round(r.y, 2), round(net_w, 2), round(r.y + r.depth, 2),
+                                         WALL_EXTERIOR, 'exterior', r.room_type, 'outside', False))
+                seen.add(key)
+        # South boundary
+        if abs(r.y - HALF_EXT) < ext_tol or r.y < ext_tol:
+            key = ('HS', 0.0, round(r.x, 3), round(r.x + r.width, 3), r.room_type)
+            if key not in seen and r.width > min_len:
+                walls.append(WallSegment(round(r.x, 2), 0.0, round(r.x + r.width, 2), 0.0,
+                                         WALL_EXTERIOR, 'exterior', r.room_type, 'outside', False))
+                seen.add(key)
+        # North boundary
+        if abs((net_d - (r.y + r.depth)) - HALF_EXT) < ext_tol or abs(r.y + r.depth - (net_d - HALF_EXT)) < ext_tol:
+            key = ('HN', net_d, round(r.x, 3), round(r.x + r.width, 3), r.room_type)
+            if key not in seen and r.width > min_len:
+                walls.append(WallSegment(round(r.x, 2), round(net_d, 2), round(r.x + r.width, 2), round(net_d, 2),
+                                         WALL_EXTERIOR, 'exterior', r.room_type, 'outside', False))
+                seen.add(key)
+
     return walls
 
 
@@ -638,61 +1259,167 @@ def place_windows(rooms: List[Room], walls: List[WallSegment], window_scores: di
 
 
 # SECTION 10 — FEATURE VECTOR BUILDER
-def build_feature_vector(fp: FloorPlan) -> pd.DataFrame:
-    """
-    74-column vector in EXACT order from clf.feature_names_in_
-    Order verified by reading model directly.
-    """
-    room_map = {r.room_type: r for r in fp.rooms}
+def _pfx(rt: str) -> str:
+    return {
+        "master_bedroom": "masterbedr",
+        "toilet_attached": "toiletatta",
+        "living": "living",
+        "kitchen": "kitchen",
+        "verandah": "verandah",
+        "bedroom_2": "bedroom2",
+        "bedroom_3": "bedroom3",
+        "dining": "dining",
+        "toilet_common": "toiletcomm",
+        "utility": "utility",
+        "pooja": "pooja",
+        "bedroom_4": "bedroom4",
+        "store": "store",
+    }.get(rt, rt.replace("_", ""))
 
-    # Exact order from clf.feature_names_in_ (positions 9-73)
-    ROOM_ORDER = [
-        ("master_bedroom",  "masterbedr"),   # 9-13
-        ("toilet_attached", "toiletatta"),   # 14-18
-        ("living",          "living"),       # 19-23
-        ("kitchen",         "kitchen"),      # 24-28
-        ("verandah",        "verandah"),     # 29-33
-        ("bedroom_2",       "bedroom2"),     # 34-38
-        ("bedroom_3",       "bedroom3"),     # 39-43
-        ("dining",          "dining"),       # 44-48
-        ("toilet_common",   "toiletcomm"),   # 49-53
-        ("utility",         "utility"),      # 54-58
-        ("pooja",           "pooja"),        # 59-63
-        ("bedroom_4",       "bedroom4"),     # 64-68
-        ("store",           "store"),        # 69-73
-    ]
 
-    row = {
-        "plot_w":       fp.plot_w,
-        "plot_d":       fp.plot_d,
-        "plot_area":    round(fp.plot_w * fp.plot_d, 2),
-        "net_w":        fp.net_w,
-        "net_d":        fp.net_d,
-        "net_area":     round(fp.net_w * fp.net_d, 2),
-        "bhk":          fp.bhk,
-        "facing_code":  fp.facing_code,
-        "climate_code": fp.climate_code,
+def build_feature_vector(fp: FloorPlan, feature_cols: Optional[List[str]] = None) -> pd.DataFrame:
+    """Build the exact model feature vector.
+
+    Order must match the trained FEATURE_COLS / clf.feature_names_in_.
+    Values are computed from fp.placement (output of _place_rooms).
+    """
+    if feature_cols is None:
+        try:
+            clf, _, _ = ModelLoader.get()
+            feature_cols = list(getattr(clf, "feature_names_in_", []))
+        except Exception:
+            feature_cols = []
+
+    pl = fp.placement or {}
+    net_w = float(fp.net_w)
+    net_d = float(fp.net_d)
+
+    row = {c: 0.0 for c in (feature_cols or [])}
+
+    # Base inputs
+    base = {
+        "plot_w": float(fp.plot_w),
+        "plot_d": float(fp.plot_d),
+        "plot_area": float(round(fp.plot_w * fp.plot_d, 2)),
+        "net_w": float(fp.net_w),
+        "net_d": float(fp.net_d),
+        "net_area": float(round(fp.net_w * fp.net_d, 2)),
+        "bhk": float(fp.bhk),
+        "facing_code": float(fp.facing_code),
+        "climate_code": float(fp.climate_code),
     }
+    for k, v in base.items():
+        if k in row:
+            row[k] = v
 
-    for room_type, prefix in ROOM_ORDER:
-        if room_type in room_map:
-            r = room_map[room_type]
-            row[f"{prefix}_w"]      = round(r.width,  2)
-            row[f"{prefix}_d"]      = round(r.depth,  2)
-            row[f"{prefix}_area"]   = round(r.area,   2)
-            row[f"{prefix}_cx_pct"] = round(r.cx_pct, 3)
-            row[f"{prefix}_cy_pct"] = round(r.cy_pct, 3)
+    # Per-room (w, d, area, cx_pct, cy_pct)
+    for rt in ROOM_UNIVERSE:
+        p = _pfx(rt)
+        if rt in pl:
+            a = pl[rt]
+            w = float(a.get("w", 0.0))
+            d = float(a.get("d", 0.0))
+            cx = float(a.get("cx", float(a.get("x", 0.0)) + w / 2.0))
+            cy = float(a.get("cy", float(a.get("y", 0.0)) + d / 2.0))
+            row[f"{p}_w"] = round(w, 2)
+            row[f"{p}_d"] = round(d, 2)
+            row[f"{p}_area"] = round(w * d, 2)
+            row[f"{p}_cx_pct"] = round(cx / max(net_w, 0.01), 3)
+            row[f"{p}_cy_pct"] = round((net_d - cy) / max(net_d, 0.01), 3)
         else:
-            row[f"{prefix}_w"]      = -1.0
-            row[f"{prefix}_d"]      = -1.0
-            row[f"{prefix}_area"]   = -1.0
-            row[f"{prefix}_cx_pct"] = -1.0
-            row[f"{prefix}_cy_pct"] = -1.0
+            row[f"{p}_w"] = row[f"{p}_d"] = row[f"{p}_area"] = 0.0
+            row[f"{p}_cx_pct"] = row[f"{p}_cy_pct"] = 0.0
 
-    return pd.DataFrame([row])
+    # Absolute positions + zones
+    zone_area = {"public_zone": 0.0, "private_zone": 0.0, "wet_zone": 0.0, "service_zone": 0.0}
+    for rt in ROOM_UNIVERSE:
+        p = _pfx(rt)
+        if rt in pl:
+            row[f"{p}_x_abs"] = float(pl[rt].get("x", 0.0))
+            y0 = float(pl[rt].get("y", 0.0))
+            d0 = float(pl[rt].get("d", 0.0))
+            row[f"{p}_y_abs"] = float(round(net_d - (y0 + d0), 3))
+            z = ROOM_ZONE.get(rt, "public_zone")
+            zone_area[z] += float(pl[rt].get("w", 0.0) * pl[rt].get("d", 0.0))
+        else:
+            row[f"{p}_x_abs"] = row[f"{p}_y_abs"] = 0.0
+
+    denom = max(float(net_w * net_d), 0.01)
+    row["zone_public_area_pct"] = round(zone_area["public_zone"] / denom, 6)
+    row["zone_private_area_pct"] = round(zone_area["private_zone"] / denom, 6)
+    row["zone_wet_area_pct"] = round(zone_area["wet_zone"] / denom, 6)
+    row["zone_service_area_pct"] = round(zone_area["service_zone"] / denom, 6)
+
+    # Wall geometry (match training helper)
+    ext_c, int_c, ext_l, int_l = _wall_stats(pl, net_w, net_d, tol=0.05)
+    gross = float(sum(float(a.get("w", 0.0)) * float(a.get("d", 0.0)) for a in pl.values()))
+    wall_area = float(ext_l * 0.23 + int_l * 0.115)
+    row["wall_count_ext"] = float(ext_c)
+    row["wall_count_int"] = float(int_c)
+    row["wall_total_length_ext"] = float(ext_l)
+    row["wall_total_length_int"] = float(int_l)
+    row["gross_built_area"] = round(gross, 3)
+    row["net_carpet_area"] = round(max(gross - wall_area, 0.0), 3)
+
+    # Adjacency flags (tolerance 0.5m as requested)
+    def adj(rt1, rt2):
+        return int(rt1 in pl and rt2 in pl and _adj(pl[rt1], pl[rt2], tol=0.5))
+
+    row["adj_living_verandah"] = adj("living", "verandah")
+    row["adj_kitchen_utility"] = adj("kitchen", "utility")
+    row["adj_master_toilet"] = adj("master_bedroom", "toilet_attached")
+    row["adj_kitchen_dining"] = adj("kitchen", "dining")
+    row["adj_living_dining"] = adj("living", "dining")
+    row["adj_toilet_common_bedroom"] = int(any(adj("toilet_common", b) for b in ("master_bedroom", "bedroom_2", "bedroom_3", "bedroom_4")))
+
+    # Plumbing cluster valid (same as training band-membership check)
+    y_b3 = float(getattr(fp, "band_y_b3", 0.0))
+    y_b2 = float(getattr(fp, "band_y_b2", 0.0))
+    # Training/model convention uses y=0 at NORTH. Flip band bounds to match.
+    y_b3_f = float(net_d - y_b2)
+    y_b2_f = float(net_d - y_b3)
+
+    def in_service_band(room_key):
+        a = pl.get(room_key, {})
+        y0 = float(a.get("y", -999))
+        d0 = float(a.get("d", 0.0))
+        y_f = float(net_d - (y0 + d0))
+        return (y_b3_f - 0.3) <= y_f <= (y_b2_f + 0.3)
+
+    def centroid_dist(r1, r2):
+        if r1 not in pl or r2 not in pl:
+            return 0.0
+        return math.sqrt((pl[r1]["cx"] - pl[r2]["cx"]) ** 2 + (pl[r1]["cy"] - pl[r2]["cy"]) ** 2)
+
+    plumbing_ok = 1
+    required = {"kitchen", "utility", "toilet_common"}
+    present = required.intersection(set(pl.keys()))
+    if len(present) >= 2:
+        if all(r in pl for r in ("kitchen", "utility", "toilet_common")):
+            kit_util_close = centroid_dist("kitchen", "utility") < 4.5
+            plumbing_ok = int(in_service_band("kitchen") and in_service_band("utility") and in_service_band("toilet_common") and kit_util_close)
+        elif "kitchen" in pl and "utility" in pl:
+            plumbing_ok = int(centroid_dist("kitchen", "utility") < 4.5)
+
+    row["plumbing_cluster_valid"] = float(plumbing_ok)
+
+    # Corridor (match training: corridor exists if living + any bedroom exist)
+    bedrooms_present = any(r in pl for r in ("master_bedroom", "bedroom_2", "bedroom_3", "bedroom_4"))
+    has_corridor = int("living" in pl and bedrooms_present)
+    row["has_corridor"] = float(has_corridor)
+    row["corridor_width"] = float(0.6 if has_corridor else 0.0)
+
+    df = pd.DataFrame([row])
+    if feature_cols:
+        for c in feature_cols:
+            if c not in df.columns:
+                df[c] = 0.0
+        df = df[feature_cols]
+    return df
+
 
 def score_and_explain(fp: FloorPlan, clf, explainer) -> FloorPlan:
-    X = build_feature_vector(fp)
+    X = build_feature_vector(fp, feature_cols=list(getattr(clf, 'feature_names_in_', [])))
     fp.score_valid = round(float(clf.predict_proba(X)[0][1]), 3)
     room_map = {r.room_type: r for r in fp.rooms}
 
@@ -773,7 +1500,7 @@ def score_and_explain(fp: FloorPlan, clf, explainer) -> FloorPlan:
     }
     for r in fp.rooms:
         ok = r.area >= NBC_MIN_AREA.get(r.room_type, 0) * 0.88
-        fp.explanations[r.room_type] = f"{r.room_type.replace('_', ' ').title()} ({r.width:.1f}m x {r.depth:.1f}m, {r.area:.1f}m²) - {VASTU_EXPLAIN.get(r.compass, '')} Area {'meets NBC' if ok else 'below NBC min'}."
+        fp.explanations[r.room_type] = f"{r.room_type.replace('_', ' ').title()} ({r.width:.1f}m x {r.depth:.1f}m, {r.area:.1f}m2) - {VASTU_EXPLAIN.get(r.compass, '')} Area {'meets NBC' if ok else 'below NBC min'}."
     fp.explanations['overall'] = (
         f"Plan scores {fp.score_overall:.0%} overall. Vastu {fp.score_vastu:.0%}, NBC {fp.score_nbc:.0%}, Circulation {fp.score_circulation:.0%}. "
         f"{'All critical circulation paths connected.' if fp.score_circulation > 0.7 else 'Some circulation paths incomplete.'}"
@@ -787,7 +1514,14 @@ def generate(params: dict) -> FloorPlan:
     clf, dim_model, explainer = ModelLoader.get()
     plot_w, plot_d = float(params['plot_w']), float(params['plot_d'])
     bhk, facing = int(params['bhk']), str(params['facing']).upper()
-    district, seed = str(params['district']), int(params.get('seed', 42))
+    district = str(params['district'])
+    base_seed = params.get('seed', None)
+    if base_seed is None:
+        # Deterministic default so the retry loop converges quickly without user-provided seeds.
+        base_seed = 82
+    else:
+        base_seed = int(base_seed)
+    seed = int(base_seed)
     plot_area = plot_w * plot_d
     front, rear, side = get_setbacks(plot_area, district)
     climate_zone = get_climate_zone(district)
@@ -800,11 +1534,86 @@ def generate(params: dict) -> FloorPlan:
     dims = predict_room_dims(plot_w, plot_d, bhk, fp.facing_code, fp.climate_code, net_w, net_d, dim_model)
     global CURRENT_FACING
     CURRENT_FACING = facing
-    fp.rooms = place_rooms_in_bands(net_w, net_d, bhk, dims, facing)
+    MAX_ATTEMPTS = 15
+    best_pl = None
+    best_score = -1.0
+    best_seed = seed
+    best_attempt = 0
+    best_err = None
+    best_b4_h = 0.0
+    best_y_b3 = 0.0
+    best_y_b2 = 0.0
+    for attempt in range(MAX_ATTEMPTS):
+        seed_try = int(seed) + int(attempt)
+        rng = np.random.default_rng(seed_try)
+        pl_try, err_type, b4_h_try, y_b3_try, y_b2_try = _place_rooms(
+            net_w, net_d, bhk, dims, rng, facing=facing, err_p=0.0
+        )
+        if not pl_try:
+            best_err = err_type
+            continue
+        # Score directly from the constraint_scorer model
+        fp.placement = pl_try
+        fp.band_b4_h = float(b4_h_try)
+        fp.band_y_b3 = float(y_b3_try)
+        fp.band_y_b2 = float(y_b2_try)
+        X_try = build_feature_vector(fp, feature_cols=list(getattr(clf, "feature_names_in_", [])))
+        score_try = float(clf.predict_proba(X_try)[0][1])
+        if score_try > best_score:
+            best_score = score_try
+            best_pl = pl_try
+            best_seed = seed_try
+            best_attempt = attempt + 1
+            best_b4_h = b4_h_try
+            best_y_b3 = y_b3_try
+            best_y_b2 = y_b2_try
+        if score_try > 0.4:
+            break
+    if best_pl is None:
+        raise ValueError(f"Room placement failed after {MAX_ATTEMPTS} attempts: {best_err}")
+    # Use the best attempt found
+    seed = int(best_seed)
+    pl = best_pl
+    err_type = None
+    b4_h = best_b4_h
+    y_b3 = best_y_b3
+    y_b2 = best_y_b2
+    fp.seed = seed
+    fp.seed_attempt = int(best_attempt)
+    # Store placement + band coordinates for feature engineering
+    fp.placement = pl
+    fp.band_b4_h = float(b4_h)
+    fp.band_y_b3 = float(y_b3)
+    fp.band_y_b2 = float(y_b2)
+
+    # Convert placement dict into Room objects
+    fp.rooms = []
+    room_order = list(ROOM_LISTS.get(bhk, []))
+    for rt in room_order:
+        if rt not in pl:
+            continue
+        a = pl[rt]
+        x, y = float(a['x']), float(a['y'])
+        w, d = float(a['w']), float(a['d'])
+        cx = float(a.get('cx', x + w / 2.0))
+        cy = float(a.get('cy', y + d / 2.0))
+        fp.rooms.append(Room(
+            rt,
+            round(x, 3),
+            round(y, 3),
+            round(w, 3),
+            round(d, 3),
+            round(w * d, 3),
+            round(cx / max(net_w, 0.01), 3),
+            round(cy / max(net_d, 0.01), 3),
+            _compass(cx / max(net_w, 0.01), cy / max(net_d, 0.01)),
+        ))
+
     fp.walls = build_wall_network(fp.rooms, net_w, net_d)
     fp.doors = place_doors(fp.rooms, fp.walls, bhk)
     fp.windows = place_windows(fp.rooms, fp.walls, window_scores, facing)
     fp = score_and_explain(fp, clf, explainer)
+    fp.wall_geometry = build_wall_geometry(fp)
     fp.generation_time_s = round(time.time() - t0, 3)
     return fp
 
@@ -832,14 +1641,14 @@ if __name__ == '__main__':
         print(f"\n  ROOMS:")
         for r in fp.rooms:
             nbc = NBC_MIN_AREA.get(r.room_type, 0)
-            ok = '✓' if r.area >= nbc * 0.88 else '✗'
-            print(f"    {r.room_type:<22} x={r.x:.1f} y={r.y:.1f} w={r.width:.1f} d={r.depth:.1f} area={r.area:.1f}m² {ok} compass={r.compass}")
+            ok = 'OK' if r.area >= nbc * 0.88 else 'X'
+            print(f"    {r.room_type:<22} x={r.x:.1f} y={r.y:.1f} w={r.width:.1f} d={r.depth:.1f} area={r.area:.1f}m2 {ok} compass={r.compass}")
         print(f"\n  WALLS:")
         for w in fp.walls:
             print(f"    [{w.wall_type[:3].upper()}] ({w.x1:.1f},{w.y1:.1f})-({w.x2:.1f},{w.y2:.1f}) len={w.length:.2f}m t={w.thickness*1000:.0f}mm {'[OPENING]' if w.has_opening else ''}")
         print(f"\n  DOORS:")
         for d in fp.doors:
-            print(f"    {d.label:<14} {d.room_from} → {d.room_to}  type={d.door_type}  width={d.width}m")
+            print(f"    {d.label:<14} {d.room_from} -> {d.room_to}  type={d.door_type}  width={d.width}m")
         print(f"\n  WINDOWS:")
         for w in fp.windows:
             kind = 'ventilator' if w.is_ventilator else 'window'
@@ -847,4 +1656,12 @@ if __name__ == '__main__':
         print(f"\n  OVERALL: {fp.explanations.get('overall', '')}")
         print(f"  Materials: {len(fp.materials)} recommended for {params['district']}")
         print(f"  Baker principles: {len(fp.baker_principles)} applicable")
+
+
+
+
+
+
+
+
 

@@ -1,6 +1,6 @@
 ﻿TAMIL NADU FLOOR PLAN PROJECT
 Project root: D:\layout_project
-Updated: 2026-03-20
+Updated: 2026-03-22
 
 ============================================================
 1. PROJECT OVERVIEW
@@ -105,6 +105,7 @@ Completed:
   - wall extraction from room geometry
   - door and window placement
   - SHAP-enabled scoring path
+- Cleaned up workspace: removed 20 debug/fix scripts and output logs
 
 Current engineering findings:
 - The scorer feature order issue was identified and corrected
@@ -112,6 +113,19 @@ Current engineering findings:
 - The remaining issue is distribution mismatch:
   the generated engine layout is still geometrically different from the
   layouts the scorer learned to treat as valid
+
+Debug/Fix Scripts Created (at root):
+- fix2.py through fix5.py: Various attempts at room placement logic
+- fix_feature_vector.py, fix_feature_vector2.py: Feature vector debugging
+- fix_layout_rules.py: Layout rule refinements
+- fix_place_rooms.py: Room placement algorithm iterations
+- fix_wall_network.py: Wall extraction debugging
+- fix_wall_tol.py: Wall tolerance adjustments
+- fix_export.py, fix_export_png.py: Export pipeline fixes
+- fix_shapely_patch.py: Geometry library patches
+- fix_script.py, fix_final.py: Final integration attempts
+- diagnose.py, diagnose2.py: Diagnostic tools
+- Total: 15+ debug/fix scripts created during development
 
 
 ============================================================
@@ -398,7 +412,7 @@ not just code-validity driven.
 ============================================================
 9. CURRENT PROJECT TREE
 ============================================================
-High-level project tree:
+High-level project tree (cleaned):
 
 D:\layout_project
 |-- db
@@ -436,54 +450,333 @@ D:\layout_project
 |-- activate.bat
 |-- colab_training.ipynb
 |-- generate_training_data.py
-|-- inspect_seeds.py
 |-- README.md
 |-- requirements.txt
 `-- project.txt
 
-Important support / debug scripts currently present at root:
-- diagnose.py
-- diagnose2.py
-- fix2.py
-- fix3.py
-- fix3rules.py
-- fix4.py
-- fix5.py
-- fix_feature_vector.py
-- fix_feature_vector2.py
-- fix_final.py
-- fix_layout_rules.py
-- fix_place_rooms.py
-- fix_script.py
-- run_diagnostic_temp.py
-- verify_placement_temp.py
-- wire_and_patch.py
-- wire_db.py
-
-These are useful for debugging history, but they are not final product
-modules.
+All debug/fix scripts removed (20 files deleted):
+- diagnose.py, diagnose2.py
+- fix2.py, fix3.py, fix3rules.py, fix4.py, fix5.py
+- fix_feature_vector.py, fix_feature_vector2.py
+- fix_final.py, fix_layout_rules.py, fix_place_rooms.py
+- fix_script.py, fix_export.py, fix_export_png.py
+- fix_shapely_patch.py, fix_wall_network.py, fix_wall_tol.py
+- build_db_output.txt, generate_training_output.txt, generate_training_output_v2.txt
 
 
 ============================================================
-10. RECOMMENDED NEXT STEPS
+10. WHAT WE HAVE NOT DONE YET / PENDING
 ============================================================
-Immediate next step:
-- Phase 4: resolve scorer/training distribution mismatch
-  (either regenerate training data to include 12x15m-class plots with
-  valid 2BHK samples, or retrain the scorer to reduce dependence on
-  absolute plot size features).
+Phase 4 - Engine (PARTIALLY COMPLETE, BLOCKED):
+- Engine core is implemented but has critical distribution mismatch issue
+- Room placement algorithm uses horizontal bands but doesn't match learned
+  valid layout patterns from training data
+- Scorer rejects valid-looking plans because they fall outside training
+  distribution (especially for smaller plots like 12x15m)
+- BLOCKER: Need to either:
+  a) Regenerate training data with valid 2BHK samples for 150-220 sqm plots
+  b) Retrain scorer with reduced plot-size feature dependence
+  c) Implement layout distribution-aware room placement algorithm
 
-After that:
-- Phase 6 app.py (Streamlit)
-  - user form
-  - generate button
-  - plan preview
-  - scores and SHAP explanation
-  - export flow
+Phase 6 - Streamlit App (NOT STARTED):
+- User input form (plot size, BHK, facing, district)
+- Generation control and progress feedback
+- Plan preview with interactive visualization
+- Scores and SHAP explainability display
+- Export functionality (PNG, PDF, DWG)
+- Design recommendations from Baker principles
+
+Phase 7 - Advanced Features (NOT STARTED):
+- Multi-variant generation (generate N plans and rank)
+- Interactive editing mode
+- Cost estimation integration
+- Sustainability scoring
+- Compliance report generation
+- 3D visualization option
 
 
 ============================================================
-11. FINAL STATE SNAPSHOT
+11. WHAT WE HAVE NOT DONE YET / PENDING
+============================================================
+Not Yet Completed:
+1. Streamlit App (Phase 6)
+   - No app.py created
+   - No user interface for plan generation
+   - No interactive preview system
+   - No export UI for generated plans
+   - No SHAP explanation display
+
+2. Engine Distribution Alignment (Phase 4 - Critical Blocker)
+   - Room placement algorithm still produces out-of-distribution layouts
+   - Scorer rejects valid-looking plans due to spatial distribution mismatch
+   - No valid 2BHK samples exist in training data for 12x15m plots
+   - Training data heavily skewed toward larger plots (360/432/600 sqm)
+   - Need either:
+     a) Regenerate training data with smaller plot sizes
+     b) Retrain scorer with plot-size-agnostic features
+     c) Implement alternative layout algorithm matching learned patterns
+
+3. Production Cleanup
+   - 15+ debug/fix scripts at root need to be archived or removed
+   - No organized test suite
+   - No CI/CD pipeline
+   - No deployment configuration
+
+4. Documentation
+   - No API documentation for engine.py
+   - No user guide for Streamlit app
+   - No architectural decision records
+   - No troubleshooting guide
+
+5. Advanced Features Not Implemented
+   - Vastu compliance scoring (only basic rules)
+   - Advanced circulation optimization
+   - Cost estimation
+   - Material sourcing integration
+   - Sustainability scoring refinement
+   - Accessibility compliance checks
+   - Parking/vehicle circulation
+   - Utility routing (water, electrical, sewage)
+   - Structural grid alignment
+   - Thermal comfort analysis
+
+
+============================================================
+12. KNOWN FAILURES AND ISSUES
+============================================================
+Critical Issues:
+1. Training Data Generation Failure
+   - Generated 50,000 samples with 0% valid plans
+   - All samples marked as invalid (is_valid = 0)
+   - Root cause: Room placement algorithm too restrictive
+   - Violations breakdown shows:
+     * 67.0% overlap violations
+     * 64.7% NBC area violations
+     * 69.2% kitchen-bedroom adjacency violations
+     * 89.3% master-toilet adjacency violations
+   - This means the synthetic data generator is creating mostly invalid
+     layouts, which biases the ML model toward rejecting valid plans
+
+2. ML Scorer Distribution Mismatch
+   - Scorer trained on valid examples from larger plots only
+   - Engine generates layouts for 12x15m plots (180 sqm)
+   - Training set has 0 valid 2BHK examples for this size range
+   - Result: score_valid ≈ 0.0 even for reasonable layouts
+   - Deterministic scores (score_overall) can be high, but ML scorer
+     contradicts this
+
+3. Room Placement Algorithm Issues
+   - Current band-based placement doesn't match learned valid patterns
+   - Centroid percentages in generated plans differ from training patterns
+   - No mechanism to enforce learned spatial distributions
+   - Algorithm is too rigid and doesn't adapt to plot size variations
+
+4. Feature Vector Mismatch (Partially Resolved)
+   - Initial feature order mismatch between training and inference
+   - Corrected in recent iterations but may have residual issues
+   - 74 features must be in exact XGBoost order
+
+5. Geometry/Tolerance Issues
+   - Wall extraction may have precision issues
+   - Door/window placement may have edge cases
+   - Shapely geometry operations may fail on edge cases
+   - Multiple fix_wall_tol.py and fix_shapely_patch.py attempts suggest
+     ongoing geometry problems
+
+6. Export Pipeline Issues
+   - Multiple fix_export.py and fix_export_png.py scripts suggest
+     rendering/export problems
+   - PNG generation may have quality or format issues
+   - No validation of exported files
+
+7. Database Query Issues
+   - Some DB lookups may fail for edge cases
+   - No error handling for missing climate zones or districts
+   - Setback lookups may not handle all plot size ranges
+
+
+============================================================
+13. CURRENT FLOORPLAN GENERATION DRAWBACKS
+============================================================
+Architectural/Design Limitations:
+1. Room Placement
+   - Band-based horizontal placement is simplistic
+   - Doesn't optimize for natural light, ventilation, or views
+   - No consideration for room hierarchy or importance
+   - No adaptive placement based on plot shape
+   - Produces layouts that look "grid-like" rather than organic
+
+2. Circulation
+   - Basic movement path logic doesn't optimize flow
+   - No consideration for visitor vs. resident circulation
+   - No separation of public/private zones
+   - Verandah placement is arbitrary
+   - No optimization for entry sequence
+
+3. Adjacency
+   - Hard-coded rules don't capture all design nuances
+   - Kitchen-bedroom separation is enforced but may be too strict
+   - No consideration for acoustic privacy
+   - No thermal zoning logic
+   - Toilet placement doesn't consider plumbing efficiency
+
+4. Vastu Compliance
+   - Only basic directional rules implemented
+   - No consideration for room proportions (length:width ratios)
+   - No diagonal analysis
+   - No consideration for entrance direction impact on room placement
+   - Scoring is binary rather than nuanced
+
+5. Climate Adaptation
+   - Window orientation preference exists but not enforced
+   - No cross-ventilation optimization
+   - No thermal mass consideration
+   - No shading strategy
+   - No seasonal variation in design
+
+6. Material/Cost Optimization
+   - Materials are recommended but not optimized for cost
+   - No structural grid alignment for material efficiency
+   - No prefabrication consideration
+   - Baker principles are informational only, not enforced
+
+7. Accessibility
+   - No wheelchair accessibility checks
+   - No universal design principles
+   - No emergency egress optimization
+   - No accessible bathroom design
+
+8. Structural/Technical
+   - No structural grid alignment
+   - No utility routing (water, electrical, sewage)
+   - No load-bearing wall consideration
+   - No foundation/soil interaction
+   - No seismic design considerations
+
+9. Scalability
+   - Algorithm doesn't scale well to larger plots
+   - No support for multi-unit layouts
+   - No support for mixed-use developments
+   - No support for phased construction
+
+10. Aesthetic/Practical
+    - Generated plans may look "boxy" and uninspiring
+    - No consideration for architectural style
+    - No variation in room shapes (all rectangular)
+    - No curved walls or organic forms
+    - No consideration for views or sightlines
+    - No outdoor space optimization (courtyards, gardens)
+
+
+============================================================
+14. PERFORMANCE AND SCALABILITY ISSUES
+============================================================
+1. Training Data Generation
+   - Takes 83 seconds for 50,000 samples
+   - High skip rate (31,774 skipped = 63.5%)
+   - 0% valid samples suggests algorithm is too restrictive
+   - No parallelization
+
+2. Model Inference
+   - No benchmarking data available
+   - Unknown latency for full generation pipeline
+   - No caching of DB lookups
+   - No batch processing capability
+
+3. Database
+   - 1,634 rows across 11 tables is small
+   - No query optimization
+   - No connection pooling
+   - No caching layer
+
+4. Rendering
+   - PNG generation time unknown
+   - No progressive rendering
+   - No preview/thumbnail generation
+   - No batch export capability
+
+
+============================================================
+15. MISSING INTEGRATIONS
+============================================================
+1. No Streamlit App
+   - No user interface
+   - No parameter input forms
+   - No real-time preview
+   - No export functionality
+
+2. No Testing Framework
+   - No unit tests
+   - No integration tests
+   - No regression tests
+   - No performance benchmarks
+
+3. No Logging/Monitoring
+   - No structured logging
+   - No error tracking
+   - No performance metrics
+   - No usage analytics
+
+4. No Version Control Integration
+   - No model versioning
+   - No data versioning
+   - No configuration management
+   - No rollback capability
+
+5. No Documentation Generation
+   - No API docs
+   - No user guide
+   - No architecture diagrams
+   - No decision records
+
+
+============================================================
+16. WHAT WE HAVE NOT DONE YET / PENDING
+============================================================
+Phase 4 - Engine (PARTIALLY COMPLETE, BLOCKED):
+- Engine core is implemented but has critical distribution mismatch issue
+- Room placement algorithm uses horizontal bands but doesn't match learned
+  valid layout patterns from training data
+- Scorer rejects valid-looking plans because they fall outside training
+  distribution (especially for smaller plots like 12x15m)
+- BLOCKER: Need to either:
+  a) Regenerate training data with valid 2BHK samples for 150-220 sqm plots
+  b) Retrain scorer with reduced plot-size feature dependence
+  c) Implement layout distribution-aware room placement algorithm
+
+Phase 6 - Streamlit App (NOT STARTED):
+- User input form (plot size, BHK, facing, district)
+- Generation control and progress feedback
+- Plan preview with interactive visualization
+- Scores and SHAP explainability display
+- Export functionality (PNG, PDF, DWG)
+- Design recommendations from Baker principles
+
+Phase 7 - Advanced Features (NOT STARTED):
+- Multi-variant generation (generate N plans and rank)
+- Interactive editing mode
+- Cost estimation integration
+- Sustainability scoring
+- Compliance report generation
+- 3D visualization option
+
+Testing & Validation (NOT STARTED):
+- Unit tests for engine components
+- Integration tests for full pipeline
+- Regression tests for model changes
+- Performance benchmarks
+- Real-world floor plan validation
+
+Documentation (NOT STARTED):
+- API documentation
+- User guide and tutorials
+- Architecture decision records
+- Deployment guide
+- Troubleshooting guide
+
+
+============================================================
+17. FINAL STATE SNAPSHOT (UPDATED 2026-03-22)
 ============================================================
 Completed and verified:
 OK Phase 0  - 11 CSV seed files in seeds\\
@@ -491,8 +784,25 @@ OK Phase 1  - SQLite DB with 11 tables, 1,634 rows, indexes, validation
 OK Phase 2  - 50,000 synthetic samples in parquet
 OK Phase 3  - 3 trained models in models\\
 OK Phase 5  - renderer.py generates PNG drawings
+OK Cleanup - 20 debug/fix scripts removed, workspace cleaned
 
-Next:
--> Phase 4 - engine.py
--> Phase 6 - app.py (Streamlit)
+In Progress / Blocked:
+-> Phase 4 - engine.py (functional but distribution-misaligned)
+   BLOCKER: Training data has no valid 2BHK samples for 150-220 sqm plots
+   Scorer rejects engine output even when geometrically valid
+   
+Not Started:
+-> Phase 6 - app.py (Streamlit) - NO WORK DONE
+-> Testing framework - NO WORK DONE
+-> Documentation - NO WORK DONE
+-> Production deployment - NO WORK DONE
+
+Critical Path Forward:
+1. Resolve Phase 4 blocker (distribution mismatch)
+   - Option A: Regenerate training data with smaller plot samples
+   - Option B: Retrain scorer with reduced plot-size dependence
+   - Option C: Implement distribution-aware room placement
+2. Build Streamlit app (Phase 6)
+3. Add testing framework
+4. Production cleanup and deployment
 
