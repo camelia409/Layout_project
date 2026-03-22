@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs wc:*)",
+      "Bash(python -c \"from engine.engine_api import generate_plan; p = generate_plan\\(12,15,2,''N'',''Coimbatore'',floors=2\\); print\\(p[''scores'']\\); print\\(''G+1 rooms:'', list\\(p[''first''].rooms.keys\\(\\)\\) if hasattr\\(p[''first''].rooms, ''keys''\\) else [r.room_type for r in p[''first''].rooms]\\)\")",
+      "Bash(python -c \":*)"
+    ]
+  }
+}
