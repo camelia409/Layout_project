@@ -112,9 +112,10 @@ def check_feature_alignment():
 # toilet_attached, toilet_common, pooja, store, dining, living, kitchen,
 # utility, verandah) need no remapping.
 FIRST_FLOOR_SCORE_MAP = {
-    "dry_kitchen":    "kitchen",
-    "staircase_head": "utility",
-    "balcony":        "verandah",
+    "dry_kitchen":    "kitchen",    # same plumbing zone, same service band
+    "staircase_head": "utility",    # same service band, similar footprint
+    "balcony":        "verandah",   # identical position; verandah is the trained column
+    "staircase":      "utility",    # ground-floor staircase scores as utility (service band)
 }
 
 
@@ -258,31 +259,32 @@ def _generate_first_floor(ground_fp: FloorPlan) -> FloorPlan:
             }
             continue
 
-        # ---- Utility → Staircase head room (1.0m × 2.5m) ----
-        if rt == "utility":
-            new_rt = "staircase_head"
-            sw = 1.0
-            sd = 2.5
-            # Place at same position as ground utility (proxy for staircase)
-            # Clamp to net boundary
-            sx = gr.x
-            sy = gr.y
-            sw = min(sw, gr.width)
-            sd = min(sd, gr.depth)
+        # ---- Ground staircase → Staircase head room (same x, y, same 1.0m × 2.5m) ----
+        # Placed at the exact same position so plumbing-stack alignment check passes.
+        if rt == "staircase":
             first_rooms.append(Room(
-                room_type=new_rt,
-                x=sx, y=sy, width=sw, depth=sd,
-                area=round(sw * sd, 2),
-                cx_pct=round((sx + sw / 2.0) / max(net_w, 0.01), 3),
-                cy_pct=round((sy + sd / 2.0) / max(net_d, 0.01), 3),
-                compass=_compass(
-                    round((sx + sw / 2.0) / max(net_w, 0.01), 3),
-                    round((sy + sd / 2.0) / max(net_d, 0.01), 3),
-                ),
+                room_type="staircase_head",
+                x=gr.x, y=gr.y, width=gr.width, depth=gr.depth,
+                area=gr.area, cx_pct=gr.cx_pct, cy_pct=gr.cy_pct,
+                compass=gr.compass,
             ))
-            first_placement[new_rt] = {
-                "x": sx, "y": sy, "w": sw, "d": sd,
-                "cx": sx + sw / 2.0, "cy": sy + sd / 2.0,
+            first_placement["staircase_head"] = {
+                "x": gr.x, "y": gr.y, "w": gr.width, "d": gr.depth,
+                "cx": gr.x + gr.width / 2.0, "cy": gr.y + gr.depth / 2.0,
+            }
+            continue
+
+        # ---- Utility carries over unchanged ----
+        if rt == "utility":
+            first_rooms.append(Room(
+                room_type="utility",
+                x=gr.x, y=gr.y, width=gr.width, depth=gr.depth,
+                area=gr.area, cx_pct=gr.cx_pct, cy_pct=gr.cy_pct,
+                compass=gr.compass,
+            ))
+            first_placement["utility"] = {
+                "x": gr.x, "y": gr.y, "w": gr.width, "d": gr.depth,
+                "cx": gr.x + gr.width / 2.0, "cy": gr.y + gr.depth / 2.0,
             }
             continue
 
@@ -434,13 +436,24 @@ def generate_plan(
     }
     if seed is not None:
         params["seed"] = int(seed)
+    params["floors"] = int(floors)
 
     ground_fp = _engine_generate(params)
 
-    # Generate first floor if requested
+    # Generate first floor if requested.
+    # NOTE: _generate_first_floor must run while ground_fp.rooms is still a
+    # List[Room] — it iterates the list to build ground_rooms dict internally.
     first_fp = None
     if floors >= 2:
         first_fp = _generate_first_floor(ground_fp)
+
+    # Convert fp.rooms from List[Room] → dict[room_type, Room] on both floors.
+    # This is the public API contract: callers use rooms.keys() / rooms.get().
+    # Engine internals (renderer, wall builder, scorer) have already finished
+    # by this point and operated on the list form.
+    ground_fp.rooms = {r.room_type: r for r in ground_fp.rooms}
+    if first_fp is not None:
+        first_fp.rooms = {r.room_type: r for r in first_fp.rooms}
 
     # Collect all 7 scores from the ground floor
     scores = {

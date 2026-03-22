@@ -1,6 +1,6 @@
 ﻿TAMIL NADU FLOOR PLAN PROJECT
 Project root: D:\layout_project
-Updated: 2026-03-22
+Updated: 2026-03-22 (review-ready)
 
 ============================================================
 1. PROJECT OVERVIEW
@@ -49,7 +49,7 @@ Phase 3 - Model Training
 Status: Complete
 - Constraint scorer:
   [constraint_scorer.pkl](D:/layout_project/models/constraint_scorer.pkl)
-  XGBClassifier, 74 features
+  XGBClassifier, 119 features
 - Room dimension predictor:
   [room_dimensions.h5](D:/layout_project/models/room_dimensions.h5)
   Keras model, 9 inputs -> 39 outputs
@@ -412,27 +412,34 @@ not just code-validity driven.
 ============================================================
 9. CURRENT PROJECT TREE
 ============================================================
-High-level project tree (cleaned):
+Review-ready project tree:
 
 D:\layout_project
-|-- db
+|-- archive\                 Legacy debug/development scripts (not needed for review)
+|   |-- inspect_seeds.py
+|   |-- run_diagnostic_temp.py
+|   |-- verify_placement_temp.py
+|   |-- wire_and_patch.py
+|   `-- wire_db.py
+|-- db\
 |   |-- build_db.py
 |   |-- floorplan.db
 |   |-- schema.sql
 |   `-- validate_db.py
-|-- engine
-|   `-- engine.py
-|-- models
+|-- engine\
+|   |-- engine.py
+|   `-- engine_api.py
+|-- models\
 |   |-- constraint_scorer.pkl
 |   |-- room_dimensions.h5
 |   `-- shap_explainer.pkl
-|-- renderer
-|   `-- renderer.py
-|-- outputs
+|-- outputs\
 |   |-- plan_Coimbatore_2BHK_N.png
 |   |-- plan_Chennai_3BHK_N.png
 |   `-- plan_Madurai_4BHK_N.png
-|-- seeds
+|-- renderer\
+|   `-- renderer.py
+|-- seeds\
 |   |-- adjacency_rules.csv
 |   |-- baker_principles.csv
 |   |-- circulation_zones.csv
@@ -444,24 +451,22 @@ D:\layout_project
 |   |-- passage_dimensions.csv
 |   |-- plot_configurations.csv
 |   `-- tn_setbacks.csv
-|-- tests
-|-- training_data
+|-- tests\
+|-- training_data\
 |   `-- floor_plan_samples.parquet
 |-- activate.bat
 |-- colab_training.ipynb
 |-- generate_training_data.py
+|-- retrain_models.py
+|-- test_integration.py
+|-- integration_test_results.json
 |-- README.md
 |-- requirements.txt
+|-- PRD.docx
 `-- project.txt
 
-All debug/fix scripts removed (20 files deleted):
-- diagnose.py, diagnose2.py
-- fix2.py, fix3.py, fix3rules.py, fix4.py, fix5.py
-- fix_feature_vector.py, fix_feature_vector2.py
-- fix_final.py, fix_layout_rules.py, fix_place_rooms.py
-- fix_script.py, fix_export.py, fix_export_png.py
-- fix_shapely_patch.py, fix_wall_network.py, fix_wall_tol.py
-- build_db_output.txt, generate_training_output.txt, generate_training_output_v2.txt
+Constraint scorer: 119 features, feature alignment verified 2026-03-22
+Integration test: ALL PASS (4/4) as of 2026-03-22
 
 
 ============================================================

@@ -43,11 +43,13 @@ NBC_MIN_WIDTH = {
     'bedroom_4': 2.1, 'living': 2.4, 'kitchen': 1.8,
     'toilet_attached': 1.2, 'toilet_common': 1.2,
     'verandah': 1.5, 'utility': 1.0, 'dining': 1.8,
+    'staircase': 1.0,
 }
 
 ROOM_UNIVERSE = [
     "master_bedroom", "toilet_attached", "living", "kitchen", "verandah",
     "bedroom_2", "bedroom_3", "dining", "toilet_common", "utility", "pooja", "bedroom_4", "store",
+    "staircase",
 ]
 
 HARDCODED_DEFAULTS = {
@@ -160,7 +162,7 @@ def _rotate(rooms_n, net_w, net_d, facing):
         out.append((rt, round(net_d - y - d, 2), round(x, 2), d, w))
     return out
 
-def _place_rooms(net_w, net_d, bhk, t, rng, facing="N", err_p=0.05):
+def _place_rooms(net_w, net_d, bhk, t, rng, facing="N", err_p=0.05, floors=1):
     reference_net_area = 108.0
     tol = 0.05
     step = 0.1
@@ -219,6 +221,7 @@ def _place_rooms(net_w, net_d, bhk, t, rng, facing="N", err_p=0.05):
         "verandah": {"min_area": net_w * 1.5, "min_width": net_w},
         "pooja": {"min_area": 1.5, "min_width": 1.0},
         "store": {"min_area": 2.0, "min_width": 1.0},
+        "staircase": {"min_area": 2.5, "min_width": 1.0},
     }
 
     def target_area(rt):
@@ -322,55 +325,78 @@ def _place_rooms(net_w, net_d, bhk, t, rng, facing="N", err_p=0.05):
     if "verandah" in rooms:
         try_add("verandah", 0.0, y_b1, net_w, b1_h, 0.0, net_w, y_b1, net_d)
 
+    # ── Pre-compute pooja size (placement is facing-dependent for Vastu NE) ──────
+    # N/E-facing: pooja in Band 2 → high cy in rotated coords = Vastu NE.
+    # S/W-facing: pooja in Band 3 south edge → low y_int → high cy after S/W rotation.
+    _pooja_in_b2 = facing in ("N", "E") and "pooja" in rooms and not small_plot
+    _pooja_in_b3 = facing in ("S", "W") and "pooja" in rooms and not small_plot
+    _pooja_w_pre = 0.0
+    _pooja_d_pre = 0.0
+    if _pooja_in_b2 or _pooja_in_b3:
+        _pooja_area = target_area("pooja")
+        _, _pooja_d_nat = scaled_dims("pooja")
+        _pooja_d_pre = min(max(_pooja_d_nat, room_rules["pooja"]["min_width"]), b2_h)
+        _pooja_w_pre = round(max(room_rules["pooja"]["min_width"],
+                                  _pooja_area / max(_pooja_d_pre, 0.1)), 2)
+        _pooja_w_pre = round(min(_pooja_w_pre, net_w * 0.20), 2)
+
+    # ── Band 2: public zone ───────────────────────────────────────────────────────
+    # Reserve pooja space: N facing → east of dining; E facing → west of living.
+    _b2_pooja_w = _pooja_w_pre if _pooja_in_b2 else 0.0
+    _b2_avail_w = net_w - _b2_pooja_w
+    _b2_x_off   = _b2_pooja_w if facing == "E" else 0.0
+
     if small_plot or "dining" not in rooms:
-        try_add("living", 0.0, y_b2, round(net_w, 2), round(b2_h, 2), 0.0, net_w, y_b2, y_b1)
+        try_add("living", _b2_x_off, y_b2, round(_b2_avail_w, 2), round(b2_h, 2),
+                0.0, net_w, y_b2, y_b1)
     else:
         living_area = target_area("living")
         dining_area = target_area("dining")
         living_share = float(rng.uniform(0.55, 0.65))
-        living_w = round(net_w * living_share, 2)
-        dining_w = round(net_w - living_w, 2)
-        living_req_w = max(room_rules["living"]["min_width"], living_area / max(b2_h, 0.1))
-        dining_req_w = max(room_rules["dining"]["min_width"], dining_area / max(b2_h, 0.1))
+        living_w = round(_b2_avail_w * living_share, 2)
+        dining_w = round(_b2_avail_w - living_w, 2)
+        living_req_w = max(room_rules["living"]["min_width"],
+                           living_area / max(b2_h, 0.1))
+        dining_req_w = max(room_rules["dining"]["min_width"],
+                           dining_area / max(b2_h, 0.1))
         living_w = max(living_w, living_req_w)
         dining_w = max(dining_w, dining_req_w)
         total_public_w = living_w + dining_w
-        if total_public_w > net_w:
-            # Scale both down proportionally first
-            scale = net_w / total_public_w
+        if total_public_w > _b2_avail_w:
+            scale = _b2_avail_w / total_public_w
             living_w = round(living_w * scale, 2)
-            dining_w = round(net_w - living_w, 2)
-
-        # Now enforce minimums — but only if the plot can physically fit both
+            dining_w = round(_b2_avail_w - living_w, 2)
         min_liv = room_rules["living"]["min_width"]
         min_din = room_rules["dining"]["min_width"]
-
-        if net_w >= (min_liv + min_din):
-            # Plot can fit both rooms with minimums
+        if _b2_avail_w >= (min_liv + min_din):
             living_w = max(living_w, min_liv)
-            dining_w = round(net_w - living_w, 2)
+            dining_w = round(_b2_avail_w - living_w, 2)
             if dining_w < min_din:
                 dining_w = min_din
-                living_w = round(net_w - dining_w, 2)
-            # Final floor — living must never go below minimum
+                living_w = round(_b2_avail_w - dining_w, 2)
             living_w = max(living_w, min_liv)
-            dining_w = round(net_w - living_w, 2)
+            dining_w = round(_b2_avail_w - living_w, 2)
         else:
-            # Plot is too narrow for both rooms at minimum widths
-            # Merge into single living space (same as small_plot path)
-            living_w = round(net_w, 2)
+            living_w = round(_b2_avail_w, 2)
             dining_w = 0.0
 
         if dining_w > 0:
-            try_add("living", 0.0, y_b2, living_w, b2_h,
+            try_add("living", _b2_x_off, y_b2, living_w, b2_h,
                     0.0, net_w, y_b2, y_b1)
-            try_add("dining", living_w, y_b2, dining_w, b2_h,
+            try_add("dining", round(_b2_x_off + living_w, 2), y_b2, dining_w, b2_h,
                     0.0, net_w, y_b2, y_b1)
         else:
-            # Merged living+dining
-            try_add("living", 0.0, y_b2, round(net_w, 2), round(b2_h, 2),
+            try_add("living", _b2_x_off, y_b2, round(_b2_avail_w, 2), round(b2_h, 2),
                     0.0, net_w, y_b2, y_b1)
 
+    # Place pooja in Band 2 for N/E-facing — Vastu NE after rotation
+    if _pooja_in_b2 and _b2_pooja_w > 0.0:
+        _b2_px = 0.0 if facing == "E" else round(net_w - _b2_pooja_w, 2)
+        _b2_pd = min(_pooja_d_pre, b2_h)
+        try_add("pooja", _b2_px, y_b2, _b2_pooja_w, _b2_pd,
+                _b2_px, _b2_px + _b2_pooja_w, y_b2, y_b1)
+
+    # ── Band 3: service zone ──────────────────────────────────────────────────────
     if any(r in rooms for r in ("toilet_common", "kitchen", "utility", "pooja", "store")):
         tc_w = 0.0
         if "toilet_common" in rooms:
@@ -379,46 +405,72 @@ def _place_rooms(net_w, net_d, bhk, t, rng, facing="N", err_p=0.05):
             tc_w = round(min(tc_w, net_w * 0.35), 2)
             try_add("toilet_common", 0.0, y_b3, tc_w, b3_h, 0.0, net_w, y_b3, y_b2)
 
-        cluster_x = round(tc_w, 2)
+        # G+1 plans need a staircase in the service band.
+        # Place it immediately east of toilet_common (x = tc_w).
+        # Fixed footprint: 1.0m wide × 2.5m deep (NBC stair clearance).
+        # try_add returns False if it can't fit — cluster_x stays at tc_w
+        # so kitchen placement is unaffected.
+        stair_placed_w = 0.0
+        if floors >= 2:
+            _stair_w = 1.0
+            _stair_d = 2.5
+            _stair_x = tc_w
+            if try_add("staircase", _stair_x, y_b3, _stair_w, _stair_d,
+                        0.0, net_w, y_b3, y_b2):
+                stair_placed_w = _stair_w
+
+        cluster_x = round(tc_w + stair_placed_w, 2)
         cluster_w = round(max(net_w - cluster_x, 0.0), 2)
+
         if cluster_w > 0.6:
-            utility_h = 0.0
-            if "utility" in rooms or "store" in rooms:
-                util_area = target_area("utility") if "utility" in rooms else 0.0
-                store_area = target_area("store") if ("store" in rooms and not small_plot) else 0.0
-                bottom_area = util_area + store_area
-                utility_h = round(max(1.2, bottom_area / max(cluster_w, 0.1)), 2)
-                utility_h = round(min(utility_h, b3_h * 0.45), 2)
-            top_h = round(b3_h - utility_h, 2)
-            if top_h < 1.0:
-                top_h = round(b3_h, 2)
-                utility_h = 0.0
-            pooja_w = 0.0
-            if "pooja" in rooms and not small_plot and top_h >= 1.0:
-                pooja_area = target_area("pooja")
-                pooja_w = round(max(room_rules["pooja"]["min_width"], pooja_area / max(top_h, 0.1)), 2)
-                pooja_w = round(min(pooja_w, cluster_w * 0.30), 2)
-            kitchen_w = round(max(cluster_w - pooja_w, 0.0), 2)
-            kitchen_w = max(kitchen_w, room_rules["kitchen"]["min_width"])
+            # Reserve east edge of cluster for pooja (S/W-facing; N/E pooja is in Band 2)
+            _b3_pooja_w = _pooja_w_pre if _pooja_in_b3 else 0.0
+            _b3_avail_w = round(cluster_w - _b3_pooja_w, 2)
+
+            # Horizontal layout (west→east): utility | kitchen | store
+            # Utility acts as a buffer between toilet_common and kitchen,
+            # satisfying the FORBIDDEN toilet_common ↔ kitchen rule while
+            # keeping REQUIRED kitchen ↔ utility adjacency (shared vertical wall).
+            util_w = 0.0
+            if "utility" in rooms:
+                util_area = target_area("utility")
+                util_w = round(max(room_rules["utility"]["min_width"],
+                                   util_area / max(b3_h, 0.1)), 2)
+                util_w = round(min(util_w, _b3_avail_w * 0.35), 2)
+
+            store_w = 0.0
+            if "store" in rooms and not small_plot and util_w > 0:
+                store_area = target_area("store")
+                store_w = round(max(room_rules["store"]["min_width"],
+                                    store_area / max(b3_h, 0.1)), 2)
+                store_w = round(min(store_w, _b3_avail_w * 0.25), 2)
+
+            kitchen_x = round(cluster_x + util_w, 2)
+            kitchen_w = round(_b3_avail_w - util_w - store_w, 2)
+            kitchen_w = max(kitchen_w, 0.0)
+
+            # Kitchen full Band 3 height, anchored at top — always touches Band 2
             if "kitchen" in rooms and kitchen_w >= room_rules["kitchen"]["min_width"]:
-                try_add("kitchen", cluster_x, round(y_b3 + utility_h, 2), kitchen_w, top_h,
-                        cluster_x, net_w, y_b3, y_b2)
-            if pooja_w > 0.0 and "pooja" in rooms and not small_plot:
-                try_add("pooja", round(cluster_x + kitchen_w, 2), round(y_b3 + utility_h, 2), pooja_w, top_h,
-                        cluster_x, net_w, y_b3, y_b2)
-            if utility_h > 0.0:
-                store_w = 0.0
-                if "store" in rooms and not small_plot:
-                    store_area = target_area("store")
-                    store_w = round(max(room_rules["store"]["min_width"], store_area / max(utility_h, 0.1)), 2)
-                    store_w = round(min(store_w, cluster_w * 0.30), 2)
-                utility_w = round(max(cluster_w - store_w, 0.0), 2)
-                if "utility" in rooms and utility_w >= room_rules["utility"]["min_width"]:
-                    try_add("utility", cluster_x, y_b3, utility_w, utility_h,
-                            cluster_x, net_w, y_b3, y_b2)
-                if store_w > 0.0 and "store" in rooms and not small_plot:
-                    try_add("store", round(cluster_x + utility_w, 2), y_b3, store_w, utility_h,
-                            cluster_x, net_w, y_b3, y_b2)
+                try_add("kitchen", kitchen_x, y_b3, kitchen_w, b3_h,
+                        kitchen_x, round(kitchen_x + kitchen_w, 2), y_b3, y_b2)
+
+            # Utility west of kitchen — shares vertical wall (REQUIRED adjacency)
+            if util_w >= room_rules["utility"]["min_width"] and "utility" in rooms:
+                try_add("utility", cluster_x, y_b3, util_w, b3_h,
+                        cluster_x, round(cluster_x + util_w, 2), y_b3, y_b2)
+
+            # Store east of kitchen — keeps utility ↔ kitchen adjacency intact
+            if store_w >= room_rules["store"]["min_width"] and "store" in rooms and not small_plot:
+                _store_x = round(kitchen_x + kitchen_w, 2)
+                try_add("store", _store_x, y_b3, store_w, b3_h,
+                        _store_x, round(_store_x + store_w, 2), y_b3, y_b2)
+
+            # Pooja at Band 3 south-east for S/W-facing (Vastu NE after S/W rotation)
+            if _b3_pooja_w > 0.0 and _pooja_in_b3:
+                _b3_px = round(net_w - _b3_pooja_w, 2)
+                _b3_pd = min(_pooja_d_pre, b3_h)
+                try_add("pooja", _b3_px, y_b3, _b3_pooja_w, _b3_pd,
+                        _b3_px, net_w, y_b3, y_b2)
 
     private_rooms = ["master_bedroom"]
     if "toilet_attached" in rooms:
@@ -477,7 +529,10 @@ def _place_rooms(net_w, net_d, bhk, t, rng, facing="N", err_p=0.05):
         y_off = private_y_offsets.get(rt, 0.0)
         if rt == "toilet_attached":
             # Toilet occupies the south portion of its column; keep top below band 3.
-            d = round(max(b4_h * 0.55, 0.8), 2)
+            # FIX 3: ensure area meets NBC minimum (NBC_MIN_AREA * 0.88 threshold in tests)
+            _ta_nbc = NBC_MIN_AREA.get('toilet_attached', 2.5)
+            _min_d_nbc = round(_ta_nbc * 0.90 / max(w, 0.1), 2)
+            d = round(max(b4_h * 0.55, _min_d_nbc, 0.8), 2)
         elif rt in ("bedroom_2", "bedroom_3", "bedroom_4"):
             # Bedrooms extend to the top of the private band (minus stagger offset).
             d = round(max(b4_h - y_off, 0.8), 2)
@@ -1440,9 +1495,15 @@ def score_and_explain(fp: FloorPlan, clf, explainer) -> FloorPlan:
     sn = 1.0
     n_rooms = len([r for r in fp.rooms if r.room_type in NBC_MIN_AREA])
     if n_rooms:
+        _net_area = fp.net_w * fp.net_d
         for r in fp.rooms:
-            if r.room_type in NBC_MIN_AREA and r.area < NBC_MIN_AREA[r.room_type] * 0.88:
-                sn -= (1.0 / n_rooms)
+            if r.room_type in NBC_MIN_AREA:
+                nbc_min = NBC_MIN_AREA[r.room_type]
+                # FIX 3: EWS plots use relaxed toilet minimum (NBC EWS exemption)
+                if r.room_type in ('toilet_attached', 'toilet_common') and _net_area < 50.0:
+                    nbc_min = 1.2
+                if r.area < nbc_min * 0.88:
+                    sn -= (1.0 / n_rooms)
 
     sc = 1.0
     pairs = [_pair(w.room_left, w.room_right) for w in fp.walls]
@@ -1515,6 +1576,7 @@ def generate(params: dict) -> FloorPlan:
     plot_w, plot_d = float(params['plot_w']), float(params['plot_d'])
     bhk, facing = int(params['bhk']), str(params['facing']).upper()
     district = str(params['district'])
+    floors = int(params.get('floors', 1))
     base_seed = params.get('seed', None)
     if base_seed is None:
         # Deterministic default so the retry loop converges quickly without user-provided seeds.
@@ -1547,7 +1609,7 @@ def generate(params: dict) -> FloorPlan:
         seed_try = int(seed) + int(attempt)
         rng = np.random.default_rng(seed_try)
         pl_try, err_type, b4_h_try, y_b3_try, y_b2_try = _place_rooms(
-            net_w, net_d, bhk, dims, rng, facing=facing, err_p=0.0
+            net_w, net_d, bhk, dims, rng, facing=facing, err_p=0.0, floors=floors
         )
         if not pl_try:
             best_err = err_type
@@ -1603,6 +1665,23 @@ def generate(params: dict) -> FloorPlan:
             round(y, 3),
             round(w, 3),
             round(d, 3),
+            round(w * d, 3),
+            round(cx / max(net_w, 0.01), 3),
+            round(cy / max(net_d, 0.01), 3),
+            _compass(cx / max(net_w, 0.01), cy / max(net_d, 0.01)),
+        ))
+
+    # "staircase" is not in ROOM_LISTS (it only appears for G+1 plans)
+    # but try_add may have placed it — append it as a Room if so.
+    if "staircase" in pl:
+        a = pl["staircase"]
+        x, y = float(a['x']), float(a['y'])
+        w, d = float(a['w']), float(a['d'])
+        cx = float(a.get('cx', x + w / 2.0))
+        cy = float(a.get('cy', y + d / 2.0))
+        fp.rooms.append(Room(
+            "staircase",
+            round(x, 3), round(y, 3), round(w, 3), round(d, 3),
             round(w * d, 3),
             round(cx / max(net_w, 0.01), 3),
             round(cy / max(net_d, 0.01), 3),

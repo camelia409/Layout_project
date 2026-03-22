@@ -28,6 +28,7 @@ ROOM_RGB = {
     'verandah':        (210, 240, 210),
     'pooja':           (250, 210, 225),
     'store':           (235, 220, 200),
+    'staircase':       (238, 238, 238),  # neutral gray #EEEEEE
 }
 
 ROOM_LABELS = {
@@ -44,6 +45,7 @@ ROOM_LABELS = {
     'verandah':        'VERANDAH',
     'pooja':           'NORTH-EAST\nPUJA',
     'store':           'STORE',
+    'staircase':       'STAIRCASE',
 }
 
 TOL = 0.08
